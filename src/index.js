@@ -1,4 +1,7 @@
 require("dotenv").config()
+const path = require("path")
+app.use("/uploads", express.static(path.join(__dirname, "..", "uploads")))
+
 const express = require("express")
 const cors = require("cors")
 const helmet = require("helmet")
@@ -6,6 +9,7 @@ const morgan = require("morgan")
 
 const authRoutes = require("./routes/auth")
 const projectTypeRoutes = require("./routes/projectTypes")
+const projectRoutes = require("./routes/projects")
 
 const app = express()
 
@@ -24,6 +28,7 @@ app.get("/health", (_req, res) => res.json({ok: true}))
 
 app.use("/auth", authRoutes)
 app.use("/admin/project-types", projectTypeRoutes)
+app.use("/projects", projectRoutes)
 
 // 404
 app.use((_req, res) => res.status(404).json({error: "Not found"}))
