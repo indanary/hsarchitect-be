@@ -10,6 +10,7 @@ const morgan = require("morgan")
 const authRoutes = require("./routes/auth")
 const projectTypeRoutes = require("./routes/projectTypes")
 const projectRoutes = require("./routes/projects")
+const studioRoutes = require("./routes/studio")
 
 const app = express()
 
@@ -29,6 +30,7 @@ app.get("/health", (_req, res) => res.json({ok: true}))
 app.use("/auth", authRoutes)
 app.use("/admin/project-types", projectTypeRoutes)
 app.use("/projects", projectRoutes)
+app.use("/studio", studioRoutes)
 
 // 404
 app.use((_req, res) => res.status(404).json({error: "Not found"}))
