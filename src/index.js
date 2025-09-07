@@ -1,6 +1,5 @@
 require("dotenv").config()
 const path = require("path")
-app.use("/uploads", express.static(path.join(__dirname, "..", "uploads")))
 
 const express = require("express")
 const cors = require("cors")
@@ -13,6 +12,8 @@ const projectRoutes = require("./routes/projects")
 const studioRoutes = require("./routes/studio")
 
 const app = express()
+
+app.use("/uploads", express.static(path.join(__dirname, "..", "uploads")))
 
 app.use(helmet())
 app.use(morgan("tiny"))
