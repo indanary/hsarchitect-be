@@ -4,6 +4,23 @@ const {requireAdmin} = require("../middleware/requireAdmin")
 
 const r = express.Router()
 
+/** ===================== PUBLIC ===================== */
+/**
+ * GET /project-types/public
+ * Returns: [{ id, project_type }]
+ */
+r.get("/public", async (req, res) => {
+	try {
+		const [rows] = await pool.execute(
+			"SELECT id, project_type FROM project_types ORDER BY id ASC",
+		)
+		res.json(rows)
+	} catch (err) {
+		console.error("GET /project-types/public error:", err)
+		res.status(500).json({error: "internal_error"})
+	}
+})
+
 // all endpoints here require admin
 r.use(requireAdmin)
 

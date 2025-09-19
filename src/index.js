@@ -29,7 +29,7 @@ app.use(
 app.get("/health", (_req, res) => res.json({ok: true}))
 
 app.use("/auth", authRoutes)
-app.use("/admin/project-types", projectTypeRoutes)
+app.use("/project-types", projectTypeRoutes)
 app.use("/projects", projectRoutes)
 app.use("/studio", studioRoutes)
 

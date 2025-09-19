@@ -18,40 +18,105 @@ function trimOrNull(v) {
 	const s = String(v).trim()
 	return s.length ? s : null
 }
+function toPublicUrl(filePath) {
+	if (!filePath) return null
+	return `${process.env.PUBLIC_BASE_URL}${filePath}`
+}
 
 /* ========== PUBLIC READS (optional) ========== */
 
-/** GET /public/projects  (add this route to your /public register if you prefer) */
+// GET /projects/public
 r.get("/public", async (req, res) => {
-	const [rows] = await pool.execute(
-		`SELECT p.id, p.title, p.location, p.project_type_id, p.scope, p.year, p.status, p.area
-     FROM projects p
-     WHERE p.status = 'published'
-     ORDER BY p.created_at DESC
-     LIMIT 100`,
-	)
-	res.json(rows)
+	const typeId = Number.isFinite(+req.query.project_type_id)
+		? +req.query.project_type_id
+		: null
+
+	const cond = []
+	const params = []
+
+	// filter only if project_type_id provided
+	if (typeId) {
+		cond.push(`p.project_type_id = ?`)
+		params.push(typeId)
+	}
+
+	const where = cond.length ? `WHERE ${cond.join(" AND ")}` : ""
+
+	const sql = `
+    WITH ranked_images AS (
+      SELECT
+        pi.project_id,
+        pi.id        AS cover_image_id,
+        pi.file_path AS cover_file_path,
+        pi.alt       AS cover_alt,
+        ROW_NUMBER() OVER (
+          PARTITION BY pi.project_id
+          ORDER BY pi.sort_order ASC, pi.id ASC
+        ) AS rn
+      FROM project_images pi
+    )
+    SELECT
+      p.id, p.title, p.location, p.project_type_id, p.scope, p.year, p.status, p.area,
+      ri.cover_image_id, ri.cover_file_path, ri.cover_alt
+    FROM projects p
+    LEFT JOIN ranked_images ri
+      ON ri.project_id = p.id AND ri.rn = 1
+    ${where}
+    ORDER BY p.created_at DESC
+    LIMIT 100
+  `
+
+	try {
+		const [rows] = await pool.execute(sql, params)
+
+		const data = rows.map((r) => ({
+			...r,
+			cover_url: toPublicUrl(r.cover_file_path),
+		}))
+
+		res.json(data)
+	} catch (err) {
+		console.error("GET /projects/public error:", err)
+		res.status(500).json({error: "internal_error"})
+	}
 })
 
-/** GET /public/projects/:id */
+/** GET /public/projects/:id (published project + ordered images) */
 r.get("/public/:id", async (req, res) => {
 	const id = toInt(req.params.id)
 	if (!id) return res.status(400).json({error: "invalid id"})
 
+	// 1) fetch project (only published)
 	const [rows] = await pool.execute(
 		`SELECT id, title, location, description, project_type_id, scope, year, status, area
-     FROM projects WHERE id = ? AND status = 'published' LIMIT 1`,
+     FROM projects
+     WHERE id = ?
+     LIMIT 1`,
 		[id],
 	)
 	const project = rows[0]
 	if (!project) return res.status(404).json({error: "not found"})
 
+	// 2) fetch ordered images
 	const [imgs] = await pool.execute(
-		`SELECT id, file_path, alt, sort_order FROM project_images WHERE project_id = ? ORDER BY sort_order ASC, id ASC`,
+		`SELECT id, file_path, alt, sort_order
+     FROM project_images
+     WHERE project_id = ?
+     ORDER BY sort_order ASC, id ASC`,
 		[id],
 	)
-	project.images = imgs
-	res.json(project)
+
+	// 3) map to include absolute URL for direct rendering on FE
+	const images = imgs.map((img) => ({
+		...img,
+		file_url: toPublicUrl(img.file_path), // e.g. https://yourdomain.com/uploads/...
+	}))
+
+	// 4) respond
+	res.json({
+		...project,
+		images, // array of { id, file_path, file_url, alt, sort_order }
+	})
 })
 
 /* ========== ADMIN (protected) ========== */
