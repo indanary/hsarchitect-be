@@ -30,14 +30,19 @@ r.get("/public", async (req, res) => {
 	const typeId = Number.isFinite(+req.query.project_type_id)
 		? +req.query.project_type_id
 		: null
+	const qRaw = (req.query.q ?? "").toString().trim()
+	const q = qRaw.length ? `%${qRaw}%` : null
 
 	const cond = []
 	const params = []
 
-	// filter only if project_type_id provided
 	if (typeId) {
 		cond.push(`p.project_type_id = ?`)
 		params.push(typeId)
+	}
+	if (q) {
+		cond.push(`(p.title LIKE ? OR p.location LIKE ? OR p.scope LIKE ?)`)
+		params.push(q, q, q)
 	}
 
 	const where = cond.length ? `WHERE ${cond.join(" AND ")}` : ""
