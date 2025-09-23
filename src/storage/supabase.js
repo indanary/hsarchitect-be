@@ -1,0 +1,36 @@
+const {createClient} = require("@supabase/supabase-js")
+
+const url = process.env.SUPABASE_URL
+const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY
+const bucket = process.env.SUPABASE_BUCKET || "projects"
+const publicBase = (process.env.SUPABASE_PUBLIC_BASE || "").replace(/\/+$/, "")
+
+if (!url || !serviceKey) {
+	console.error("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY")
+}
+
+const supabaseAdmin = createClient(url, serviceKey, {
+	auth: {persistSession: false},
+})
+
+/** Build an object path for a project image */
+function objectKeyForProject(projectId, originalName) {
+	const safe = `${Date.now()}-${(originalName || "file").replace(
+		/\s+/g,
+		"-",
+	)}`
+	return `projects/${projectId}/${safe}` // subfolder inside bucket
+}
+
+/** Get a public URL for an object path */
+function toPublicFileUrl(objectPath) {
+	// Option A: build manually using the well-known public URL format:
+	if (publicBase)
+		return `${publicBase}/${bucket}/${encodeURIComponent(objectPath)}`
+
+	// Option B: ask Supabase to generate it:
+	const {data} = supabaseAdmin.storage.from(bucket).getPublicUrl(objectPath)
+	return data.publicUrl
+}
+
+module.exports = {supabaseAdmin, bucket, objectKeyForProject, toPublicFileUrl}

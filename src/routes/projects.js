@@ -5,6 +5,14 @@ const fsp = fs.promises
 const multer = require("multer")
 const {pool} = require("../db")
 const {requireAdmin} = require("../middleware/requireAdmin")
+const {uploadMemory} = require("../storage/multerMemory")
+const {
+	supabaseAdmin,
+	bucket,
+	objectKeyForProject,
+	toPublicFileUrl,
+} = require("../storage/supabase")
+const sharp = require("sharp")
 
 const r = express.Router()
 
@@ -21,6 +29,17 @@ function trimOrNull(v) {
 function toPublicUrl(filePath) {
 	if (!filePath) return null
 	return `${process.env.PUBLIC_BASE_URL}${filePath}`
+}
+// helper to generate base key (no extension)
+function baseKey(projectId, originalName) {
+	const name = (originalName || "image")
+		.replace(/\.[^.]+$/, "")
+		.replace(/\s+/g, "-")
+	return `projects/${projectId}/${Date.now()}-${name}`
+}
+// turn "projects/2/123-foo@1600w.webp" -> "...@800w.webp"
+function variantKeyFromMain(mainKey, width) {
+	return mainKey.replace(/@(\d+)w\.webp$/, `@${width}w.webp`)
 }
 
 /* ========== PUBLIC READS (optional) ========== */
@@ -76,7 +95,10 @@ r.get("/public", async (req, res) => {
 
 		const data = rows.map((r) => ({
 			...r,
-			cover_url: toPublicUrl(r.cover_file_path),
+			// CHANGE: use Supabase public URL from object key
+			cover_url: r.cover_file_path
+				? toPublicFileUrl(r.cover_file_path)
+				: null,
 		}))
 
 		res.json(data)
@@ -112,10 +134,13 @@ r.get("/public/:id", async (req, res) => {
 	)
 
 	// 3) map to include absolute URL for direct rendering on FE
-	const images = imgs.map((img) => ({
-		...img,
-		file_url: toPublicUrl(img.file_path), // e.g. https://yourdomain.com/uploads/...
-	}))
+	const images = imgs.map((img) => {
+		const file_url = img.file_path ? toPublicFileUrl(img.file_path) : null
+		const thumb_url = img.file_path
+			? toPublicFileUrl(variantKeyFromMain(img.file_path, 800))
+			: null
+		return {...img, file_url, thumb_url}
+	})
 
 	// 4) respond
 	res.json({
@@ -173,7 +198,10 @@ r.get("/admin/:id", async (req, res) => {
 		`SELECT id, file_path, alt, sort_order FROM project_images WHERE project_id = ? ORDER BY sort_order ASC, id ASC`,
 		[id],
 	)
-	project.images = imgs
+	project.images = imgs.map((img) => ({
+		...img,
+		file_url: img.file_path ? toPublicFileUrl(img.file_path) : null,
+	}))
 	res.json(project)
 })
 
@@ -287,54 +315,102 @@ r.delete("/admin/:id", async (req, res) => {
 /* ========== IMAGE UPLOADS ========== */
 
 /** Multer setup (store in /uploads/projects/<projectId>/) */
-const storage = multer.diskStorage({
-	destination: async (req, file, cb) => {
+// const storage = multer.diskStorage({
+// 	destination: async (req, file, cb) => {
+// 		const projectId = toInt(req.params.id)
+// 		const dest = path.join(
+// 			__dirname,
+// 			"..",
+// 			"..",
+// 			"uploads",
+// 			"projects",
+// 			String(projectId),
+// 		)
+// 		await fsp.mkdir(dest, {recursive: true})
+// 		cb(null, dest)
+// 	},
+// 	filename: (_req, file, cb) => {
+// 		// add timestamp prefix to avoid collisions
+// 		const ext = path.extname(file.originalname)
+// 		const base = path.basename(file.originalname, ext).replace(/\s+/g, "-")
+// 		cb(null, `${Date.now()}-${base}${ext}`)
+// 	},
+// })
+// const upload = multer({storage})
+
+/** POST /admin/projects/:id/images  (multipart form: files[]; alt?, sort_order?) */
+r.post(
+	"/admin/:id/images",
+	uploadMemory.array("files", 10),
+	async (req, res) => {
 		const projectId = toInt(req.params.id)
-		const dest = path.join(
-			__dirname,
-			"..",
-			"..",
-			"uploads",
-			"projects",
-			String(projectId),
-		)
-		await fsp.mkdir(dest, {recursive: true})
-		cb(null, dest)
+		if (!projectId) return res.status(400).json({error: "invalid id"})
+		if (!req.files?.length)
+			return res.status(400).json({error: "no files uploaded"})
+
+		try {
+			const rows = []
+			const uploaded = [] // for response (with URLs)
+
+			for (const f of req.files) {
+				const base = baseKey(projectId, f.originalname)
+
+				// 1) Generate 1600w WEBP (detail)
+				const buf1600 = await sharp(f.buffer)
+					.rotate() // respect EXIF orientation
+					.resize({width: 1600, withoutEnlargement: true})
+					.webp({quality: 78})
+					.toBuffer()
+
+				const key1600 = `${base}@1600w.webp`
+				const up1 = await supabaseAdmin.storage
+					.from(bucket)
+					.upload(key1600, buf1600, {
+						contentType: "image/webp",
+						cacheControl: "31536000, immutable",
+						upsert: false,
+					})
+				if (up1.error) throw up1.error
+
+				// 2) Generate 800w WEBP (thumb/grid)
+				const buf800 = await sharp(f.buffer)
+					.rotate()
+					.resize({width: 800, withoutEnlargement: true})
+					.webp({quality: 78})
+					.toBuffer()
+
+				const key800 = `${base}@800w.webp`
+				const up2 = await supabaseAdmin.storage
+					.from(bucket)
+					.upload(key800, buf800, {
+						contentType: "image/webp",
+						cacheControl: "31536000, immutable",
+						upsert: false,
+					})
+				if (up2.error) throw up2.error
+
+				// Store only the main (1600w) in DB — schema unchanged
+				rows.push([projectId, key1600, null, 0])
+
+				uploaded.push({
+					file_path: key1600,
+					file_url: toPublicFileUrl(key1600),
+					thumb_url: toPublicFileUrl(key800), // not stored in DB, handy for FE
+				})
+			}
+
+			await pool.query(
+				`INSERT INTO project_images (project_id, file_path, alt, sort_order) VALUES ?`,
+				[rows],
+			)
+
+			res.status(201).json(uploaded)
+		} catch (e) {
+			console.error("upload optimize error:", e)
+			res.status(500).json({error: "upload_failed"})
+		}
 	},
-	filename: (_req, file, cb) => {
-		// add timestamp prefix to avoid collisions
-		const ext = path.extname(file.originalname)
-		const base = path.basename(file.originalname, ext).replace(/\s+/g, "-")
-		cb(null, `${Date.now()}-${base}${ext}`)
-	},
-})
-const upload = multer({storage})
-
-/** POST /admin/projects/:id/images  (multipart form: files[]; fields: alt?, sort_order?) */
-r.post("/admin/:id/images", upload.array("files", 10), async (req, res) => {
-	const projectId = toInt(req.params.id)
-	if (!projectId) return res.status(400).json({error: "invalid id"})
-	if (!req.files || !req.files.length)
-		return res.status(400).json({error: "no files uploaded"})
-
-	const rows = []
-	for (const f of req.files) {
-		const relPath = `/uploads/projects/${projectId}/${f.filename}`
-		rows.push([projectId, relPath, null, 0])
-	}
-
-	await pool.query(
-		`INSERT INTO project_images (project_id, file_path, alt, sort_order) VALUES ?`,
-		[rows],
-	)
-
-	// return current images list
-	const [imgs] = await pool.execute(
-		`SELECT id, file_path, alt, sort_order FROM project_images WHERE project_id = ? ORDER BY sort_order ASC, id ASC`,
-		[projectId],
-	)
-	res.status(201).json(imgs)
-})
+)
 
 /** PATCH /admin/projects/:id/images/:imageId  (alt, sort_order) */
 r.patch("/admin/:id/images/:imageId", async (req, res) => {
@@ -367,18 +443,20 @@ r.patch("/admin/:id/images/:imageId", async (req, res) => {
 	res.status(204).end()
 })
 
-/** DELETE /admin/projects/:id/images/:imageId  (remove from DB and disk) */
+/** DELETE /admin/projects/:id/images/:imageId  (remove from DB and storage) */
 r.delete("/admin/:id/images/:imageId", async (req, res) => {
 	const projectId = toInt(req.params.id)
 	const imageId = toInt(req.params.imageId)
 	if (!projectId || !imageId)
 		return res.status(400).json({error: "invalid id"})
 
+	// 1) read current key
 	const [[img]] = await pool.query(
 		`SELECT file_path FROM project_images WHERE project_id = ? AND id = ? LIMIT 1`,
 		[projectId, imageId],
 	)
 
+	// 2) delete DB row
 	const [result] = await pool.execute(
 		`DELETE FROM project_images WHERE project_id = ? AND id = ?`,
 		[projectId, imageId],
@@ -386,14 +464,14 @@ r.delete("/admin/:id/images/:imageId", async (req, res) => {
 	if (result.affectedRows === 0)
 		return res.status(404).json({error: "not found"})
 
+	// 3) delete object from Supabase (ignore errors)
 	if (img && img.file_path) {
-		const abs = path.join(
-			__dirname,
-			"..",
-			"..",
-			img.file_path.replace(/^\//, ""),
-		)
-		fsp.unlink(abs).catch(() => {})
+		const key1600 = img.file_path
+		const key800 = variantKeyFromMain(key1600, 800)
+		await supabaseAdmin.storage
+			.from(bucket)
+			.remove([key1600, key800])
+			.catch(() => {})
 	}
 
 	res.status(204).end()
