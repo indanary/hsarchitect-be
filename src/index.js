@@ -41,7 +41,8 @@ app.use(
 			if (!origin || allowed.includes(origin)) return cb(null, true)
 			return cb(new Error("Not allowed by CORS"))
 		},
-		methods: ["GET", "POST", "PATCH", "DELETE"],
+		methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+		allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
 		credentials: false,
 	}),
 )
