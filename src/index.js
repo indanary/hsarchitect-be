@@ -1,4 +1,6 @@
+// index.js
 require("dotenv").config()
+
 const express = require("express")
 const cors = require("cors")
 const helmet = require("helmet")
@@ -26,10 +28,7 @@ app.use(
 /** Logging */
 app.use(morgan(process.env.NODE_ENV === "production" ? "combined" : "dev"))
 
-/** Body parsing */
-app.use(express.json({limit: "2mb"}))
-
-/** CORS: allow your public site and dashboard */
+/** CORS: allow your public site and dashboard via env list */
 const allowed = (process.env.CORS_ALLOW_ORIGINS || "")
 	.split(",")
 	.map((s) => s.trim())
@@ -37,6 +36,7 @@ const allowed = (process.env.CORS_ALLOW_ORIGINS || "")
 
 const corsOptions = {
 	origin(origin, cb) {
+		// allow no-origin (curl/healthchecks) and any whitelisted
 		if (!origin || allowed.includes(origin)) return cb(null, true)
 		return cb(new Error("Not allowed by CORS"))
 	},
@@ -46,11 +46,10 @@ const corsOptions = {
 }
 
 app.use(cors(corsOptions))
+// Handle preflight for all routes (path-to-regexp v6-safe)
+app.options(/.*/, cors(corsOptions))
 
-// ✅ Explicitly handle preflight for all routes (lets OPTIONS pass without auth)
-app.options("*", cors(corsOptions))
-
-// body parser stays small so big payloads can't sneak in via JSON
+/** Body parsing (keep small so files can’t sneak in via JSON) */
 app.use(express.json({limit: "2mb"}))
 
 /** Basic rate limit for public APIs */
@@ -71,7 +70,7 @@ app.get("/health", (_req, res) => res.json({ok: true}))
 app.use("/auth", authRoutes)
 app.use("/project-types", projectTypeRoutes)
 app.use("/projects", projectRoutes)
-app.use("/projects", projectImagesRoutes) // now handles all image management
+app.use("/projects", projectImagesRoutes) // image management
 app.use("/studio", studioRoutes)
 
 /** 404 */
