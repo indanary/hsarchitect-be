@@ -4,7 +4,7 @@ const fs = require("fs")
 const fsp = fs.promises
 const {pool} = require("../db")
 const {requireAdmin} = require("../middleware/requireAdmin")
-const {toPublicFileUrl} = require("../storage/supabase")
+const {toPublicFileUrl, toPublicTransformedUrl} = require("../storage/supabase")
 
 const r = express.Router()
 
@@ -118,7 +118,7 @@ r.get("/public/:id", async (req, res) => {
 	const images = imgs.map((img) => {
 		const file_url = img.file_path ? toPublicFileUrl(img.file_path) : null
 		const thumb_url = img.file_path
-			? toPublicFileUrl(variantKeyFromMain(img.file_path, 800))
+			? toPublicTransformedUrl(variantKeyFromMain(img.file_path, 800))
 			: null
 		return {...img, file_url, thumb_url}
 	})

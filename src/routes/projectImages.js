@@ -5,24 +5,19 @@ const Busboy = require("busboy")
 const {pool} = require("../db")
 const {requireAdmin} = require("../middleware/requireAdmin")
 const {
-	supabaseAdmin, // kept for deletes
 	bucket,
 	objectKeyForProject,
 	toPublicFileUrl,
+	toPublicTransformedUrl, // NEW
 } = require("../storage/supabase")
 
 const r = express.Router()
 
-// Reduce sharp RAM/CPU spikes (safe defaults for 512 MB instances)
+// be conservative on memory/CPU
 sharp.cache(false)
 sharp.concurrency(1)
 
-/** helper to turn "projects/2/123-foo@1600w.webp" -> "...@800w.webp" */
-function variantKeyFromMain(mainKey, width) {
-	return mainKey.replace(/@(\d+)w\.webp$/, `@${width}w.webp`)
-}
-
-/** stream upload to Supabase Storage via REST (no Buffers, no disk) */
+/** stream upload to Supabase Storage via REST */
 async function uploadStreamToSupabase({
 	bucket,
 	key,
@@ -39,7 +34,6 @@ async function uploadStreamToSupabase({
 		/\/+$/,
 		"",
 	)}/storage/v1/object/${encodeURIComponent(bucket)}/${key}`
-
 	const resp = await fetch(url, {
 		method: "POST",
 		headers: {
@@ -48,10 +42,9 @@ async function uploadStreamToSupabase({
 			"x-upsert": upsert ? "true" : "false",
 			"Cache-Control": "31536000, immutable",
 		},
-		body, // Node stream (sharp pipeline)
-		duplex: "half", // <-- REQUIRED for streaming bodies in Node.js fetch
+		body, // Readable stream (sharp pipeline)
+		duplex: "half", // required by Node fetch for streaming bodies
 	})
-
 	if (!resp.ok) {
 		const text = await resp.text().catch(() => "")
 		throw new Error(`Supabase upload failed (${resp.status}): ${text}`)
@@ -61,7 +54,7 @@ async function uploadStreamToSupabase({
 /* ========== ADMIN: IMAGES (manage) ========== */
 r.use(requireAdmin)
 
-/** POST /projects/admin/:id/images  (multipart: files[]) — streaming, zero-copy */
+/** POST /projects/admin/:id/images  (multipart: files[]) — streaming, one size only */
 r.post("/admin/:id/images", async (req, res) => {
 	const projectId = Number(req.params.id)
 	if (!projectId) return res.status(400).json({error: "invalid id"})
@@ -87,60 +80,40 @@ r.post("/admin/:id/images", async (req, res) => {
 	bb.on("file", (_name, file, info) => {
 		const {filename, mimeType} = info || {}
 		if (!mimeType || !/^image\//i.test(mimeType)) {
-			file.resume() // skip non-images safely
+			file.resume() // skip non-images
 			return
 		}
 		fileCount++
 
 		const base = objectKeyForProject(projectId, filename)
 		const key1600 = `${base}@1600w.webp`
-		const key800 = `${base}@800w.webp`
 
-		// one input -> two output streams
-		const src = sharp().rotate() // respects EXIF
-		const s1600 = src
-			.clone()
+		// one pipeline → 1600w webp
+		const s1600 = sharp()
+			.rotate()
 			.resize({width: 1600, withoutEnlargement: true})
 			.webp({quality: 78})
-		const s800 = src
-			.clone()
-			.resize({width: 800, withoutEnlargement: true})
-			.webp({quality: 78})
 
-		// start feeding data
-		file.pipe(src)
+		// begin streaming
+		file.pipe(s1600)
 
-		// kick off uploads (stream -> REST)
-		const put1600 = uploadStreamToSupabase({
+		const task = uploadStreamToSupabase({
 			bucket,
 			key: key1600,
 			body: s1600,
 			contentType: "image/webp",
 			upsert: false,
-		})
-
-		const put800 = uploadStreamToSupabase({
-			bucket,
-			key: key800,
-			body: s800,
-			contentType: "image/webp",
-			upsert: false,
-		})
-
-		const task = Promise.all([put1600, put800]).then(() => {
-			rows.push([projectId, key1600, null, 0]) // keep 1600 as "main" in DB
+		}).then(() => {
+			rows.push([projectId, key1600, null, 0])
 			uploaded.push({
 				file_path: key1600,
 				file_url: toPublicFileUrl(key1600),
-				thumb_url: toPublicFileUrl(key800),
+				// 800 thumb generated on the fly — no second encode/upload
+				thumb_url: toPublicTransformedUrl(key1600, {width: 800}),
 			})
 		})
 
 		tasks.push(task)
-	})
-
-	bb.on("field", () => {
-		/* ignore optional fields for now */
 	})
 
 	bb.on("error", (err) => {
@@ -152,6 +125,7 @@ r.post("/admin/:id/images", async (req, res) => {
 		if (!fileCount)
 			return res.status(400).json({error: "no files uploaded"})
 		try {
+			// ensure strict sequentiality if needed by awaiting per task; currently each file runs alone anyway
 			await Promise.all(tasks)
 			await pool.query(
 				`INSERT INTO project_images (project_id, file_path, alt, sort_order) VALUES ?`,
@@ -221,14 +195,24 @@ r.delete("/admin/:id/images/:imageId", async (req, res) => {
 	if (result.affectedRows === 0)
 		return res.status(404).json({error: "not found"})
 
-	// delete objects from storage (ignore errors)
+	// only one object exists now; removing an 800 key is harmless if missing
 	if (img && img.file_path) {
 		const key1600 = img.file_path
-		const key800 = variantKeyFromMain(key1600, 800)
-		await supabaseAdmin.storage
-			.from(bucket)
-			.remove([key1600, key800])
-			.catch(() => {})
+		const key800 = key1600.replace(/@(\d+)w\.webp$/, "@800w.webp")
+		await fetch(
+			`${process.env.SUPABASE_URL.replace(
+				/\/+$/,
+				"",
+			)}/storage/v1/object/${encodeURIComponent(bucket)}`,
+			{
+				method: "DELETE",
+				headers: {
+					Authorization: `Bearer ${process.env.SUPABASE_SERVICE_ROLE_KEY}`,
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify({prefixes: [key1600, key800]}),
+			},
+		).catch(() => {})
 	}
 
 	res.status(204).end()

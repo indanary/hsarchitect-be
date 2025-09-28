@@ -43,10 +43,18 @@ async function createSignedUploadForProject(projectId, originalName) {
 	return {key, token: data.token}
 }
 
+function toPublicTransformedUrl(objectPath, transform = {width: 800}) {
+	const {data} = supabaseAdmin.storage
+		.from(bucket)
+		.getPublicUrl(objectPath, {transform})
+	return data.publicUrl
+}
+
 module.exports = {
 	supabaseAdmin,
 	bucket,
 	objectKeyForProject,
 	toPublicFileUrl,
 	createSignedUploadForProject,
+	toPublicTransformedUrl,
 }
