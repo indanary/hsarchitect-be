@@ -8,22 +8,27 @@ const {
 	bucket,
 	objectKeyForProject,
 	toPublicFileUrl,
-	toPublicTransformedUrl, // NEW
+	toPublicTransformedUrl, // ensure this is exported in storage/supabase.js
 } = require("../storage/supabase")
 
 const r = express.Router()
 
-// be conservative on memory/CPU
+// Configurable max upload size (bytes). Default 20MB.
+// You can set UPLOAD_MAX_BYTES in your Render env if needed.
+const MAX_FILE_SIZE = Number(process.env.UPLOAD_MAX_BYTES || 20 * 1024 * 1024)
+
+// Be conservative on resources
 sharp.cache(false)
 sharp.concurrency(1)
 
-/** stream upload to Supabase Storage via REST */
+/** Stream upload to Supabase Storage via REST */
 async function uploadStreamToSupabase({
 	bucket,
 	key,
 	body,
 	contentType = "application/octet-stream",
 	upsert = false,
+	signal,
 }) {
 	const base = process.env.SUPABASE_URL
 	const token = process.env.SUPABASE_SERVICE_ROLE_KEY
@@ -43,7 +48,8 @@ async function uploadStreamToSupabase({
 			"Cache-Control": "31536000, immutable",
 		},
 		body, // Readable stream (sharp pipeline)
-		duplex: "half", // required by Node fetch for streaming bodies
+		duplex: "half", // required for streaming bodies in Node fetch
+		signal,
 	})
 	if (!resp.ok) {
 		const text = await resp.text().catch(() => "")
@@ -54,26 +60,28 @@ async function uploadStreamToSupabase({
 /* ========== ADMIN: IMAGES (manage) ========== */
 r.use(requireAdmin)
 
-/** POST /projects/admin/:id/images  (multipart: files[]) — streaming, one size only */
+/** POST /projects/admin/:id/images  (multipart: files[]) — streaming, one size only (1600w) */
 r.post("/admin/:id/images", async (req, res) => {
 	const projectId = Number(req.params.id)
 	if (!projectId) return res.status(400).json({error: "invalid id"})
 
 	const rows = []
 	const uploaded = []
-	let fileCount = 0
 	const tasks = []
+	let fileCount = 0
+	let hadLimitError = false
+	const perFileErrors = []
 
 	let bb
 	try {
 		bb = Busboy({
 			headers: req.headers,
-			limits: {files: 10, fileSize: 10 * 1024 * 1024},
+			limits: {files: 10, fileSize: MAX_FILE_SIZE},
 		})
 	} catch {
 		bb = new Busboy({
 			headers: req.headers,
-			limits: {files: 10, fileSize: 10 * 1024 * 1024},
+			limits: {files: 10, fileSize: MAX_FILE_SIZE},
 		})
 	}
 
@@ -85,52 +93,138 @@ r.post("/admin/:id/images", async (req, res) => {
 		}
 		fileCount++
 
+		// Build keys
 		const base = objectKeyForProject(projectId, filename)
 		const key1600 = `${base}@1600w.webp`
 
-		// one pipeline → 1600w webp
-		const s1600 = sharp()
+		// Pipeline: source -> (rotate, resize->1600, webp)
+		const s1600 = sharp({sequentialRead: true})
 			.rotate()
 			.resize({width: 1600, withoutEnlargement: true})
 			.webp({quality: 78})
 
-		// begin streaming
-		file.pipe(s1600)
-
-		const task = uploadStreamToSupabase({
+		// Abortable upload
+		const ac = new AbortController()
+		const put1600 = uploadStreamToSupabase({
 			bucket,
 			key: key1600,
 			body: s1600,
 			contentType: "image/webp",
 			upsert: false,
-		}).then(() => {
-			rows.push([projectId, key1600, null, 0])
-			uploaded.push({
-				file_path: key1600,
-				file_url: toPublicFileUrl(key1600),
-				// 800 thumb generated on the fly — no second encode/upload
-				thumb_url: toPublicTransformedUrl(key1600, {width: 800}),
-			})
+			signal: ac.signal,
 		})
+
+		// Wire error/limit handling
+		file.on("limit", () => {
+			hadLimitError = true
+			const err = new Error("file_too_large")
+			perFileErrors.push({
+				filename,
+				code: "FILE_TOO_LARGE",
+				message: `File exceeded ${MAX_FILE_SIZE} bytes`,
+			})
+			// Stop the pipeline & outgoing fetch
+			try {
+				s1600.destroy(err)
+			} catch {}
+			try {
+				ac.abort(err)
+			} catch {}
+			file.resume() // drain remaining input safely
+		})
+
+		file.on("error", (err) => {
+			perFileErrors.push({
+				filename,
+				code: "FILE_STREAM_ERROR",
+				message: String(err?.message || err),
+			})
+			try {
+				s1600.destroy(err)
+			} catch {}
+			try {
+				ac.abort(err)
+			} catch {}
+		})
+
+		s1600.on("error", (err) => {
+			// Common case: truncated JPEG -> VipsJpeg: premature end...
+			perFileErrors.push({
+				filename,
+				code: "IMAGE_PROCESS_ERROR",
+				message: String(err?.message || err),
+			})
+			try {
+				ac.abort(err)
+			} catch {}
+		})
+
+		// Start streaming
+		file.pipe(s1600)
+
+		const task = put1600
+			.then(() => {
+				// Only record success if we didn't trip errors for this file
+				// (If aborted, promise rejects and will be caught below)
+				rows.push([projectId, key1600, null, 0])
+				uploaded.push({
+					file_path: key1600,
+					file_url: toPublicFileUrl(key1600),
+					// 800w thumbnail is generated on-the-fly (no second encode)
+					thumb_url: toPublicTransformedUrl(key1600, {width: 800}),
+				})
+			})
+			.catch((err) => {
+				// Already recorded a per-file error above; ensure we note it if not
+				if (!perFileErrors.find((e) => e.filename === filename)) {
+					perFileErrors.push({
+						filename,
+						code: "UPLOAD_ERROR",
+						message: String(err?.message || err),
+					})
+				}
+			})
 
 		tasks.push(task)
 	})
 
 	bb.on("error", (err) => {
-		console.error("busboy error:", err)
-		res.status(500).json({error: "upload_failed"})
+		return res
+			.status(500)
+			.json({error: "upload_failed", detail: String(err?.message || err)})
 	})
 
 	bb.on("finish", async () => {
 		if (!fileCount)
 			return res.status(400).json({error: "no files uploaded"})
+
 		try {
-			// ensure strict sequentiality if needed by awaiting per task; currently each file runs alone anyway
 			await Promise.all(tasks)
-			await pool.query(
-				`INSERT INTO project_images (project_id, file_path, alt, sort_order) VALUES ?`,
-				[rows],
-			)
+
+			// If any file exceeded the size limit, return 413 and do NOT insert
+			if (hadLimitError) {
+				return res.status(413).json({
+					error: "file_too_large",
+					max_bytes: MAX_FILE_SIZE,
+					files: perFileErrors,
+				})
+			}
+
+			// If there were other per-file errors and none succeeded, surface them
+			if (uploaded.length === 0 && perFileErrors.length) {
+				return res
+					.status(400)
+					.json({error: "upload_failed", files: perFileErrors})
+			}
+
+			// Insert only successful ones
+			if (rows.length) {
+				await pool.query(
+					`INSERT INTO project_images (project_id, file_path, alt, sort_order) VALUES ?`,
+					[rows],
+				)
+			}
+
 			res.status(201).json(uploaded)
 		} catch (e) {
 			console.error("upload optimize error:", e)
@@ -195,7 +289,7 @@ r.delete("/admin/:id/images/:imageId", async (req, res) => {
 	if (result.affectedRows === 0)
 		return res.status(404).json({error: "not found"})
 
-	// only one object exists now; removing an 800 key is harmless if missing
+	// delete objects from storage (ignore errors)
 	if (img && img.file_path) {
 		const key1600 = img.file_path
 		const key800 = key1600.replace(/@(\d+)w\.webp$/, "@800w.webp")
