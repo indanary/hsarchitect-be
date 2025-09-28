@@ -32,14 +32,14 @@ async function uploadStreamToSupabase({
 }) {
 	const base = process.env.SUPABASE_URL
 	const token = process.env.SUPABASE_SERVICE_ROLE_KEY
-	if (!base || !token) {
+	if (!base || !token)
 		throw new Error("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY")
-	}
-	// REST endpoint: POST /storage/v1/object/{bucket}/{objectPath}
+
 	const url = `${base.replace(
 		/\/+$/,
 		"",
 	)}/storage/v1/object/${encodeURIComponent(bucket)}/${key}`
+
 	const resp = await fetch(url, {
 		method: "POST",
 		headers: {
@@ -48,8 +48,10 @@ async function uploadStreamToSupabase({
 			"x-upsert": upsert ? "true" : "false",
 			"Cache-Control": "31536000, immutable",
 		},
-		body, // Readable stream from sharp
+		body, // Node stream (sharp pipeline)
+		duplex: "half", // <-- REQUIRED for streaming bodies in Node.js fetch
 	})
+
 	if (!resp.ok) {
 		const text = await resp.text().catch(() => "")
 		throw new Error(`Supabase upload failed (${resp.status}): ${text}`)
