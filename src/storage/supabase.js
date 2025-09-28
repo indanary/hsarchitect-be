@@ -33,4 +33,20 @@ function toPublicFileUrl(objectPath) {
 	return data.publicUrl
 }
 
-module.exports = {supabaseAdmin, bucket, objectKeyForProject, toPublicFileUrl}
+// export with the rest
+async function createSignedUploadForProject(projectId, originalName) {
+	const key = objectKeyForProject(projectId, originalName)
+	const {data, error} = await supabaseAdmin.storage
+		.from(bucket)
+		.createSignedUploadUrl(key) // returns { token }
+	if (error) throw error
+	return {key, token: data.token}
+}
+
+module.exports = {
+	supabaseAdmin,
+	bucket,
+	objectKeyForProject,
+	toPublicFileUrl,
+	createSignedUploadForProject,
+}

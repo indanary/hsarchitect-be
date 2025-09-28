@@ -9,6 +9,7 @@ const authRoutes = require("./routes/auth")
 const projectTypeRoutes = require("./routes/projectTypes")
 const projectRoutes = require("./routes/projects")
 const studioRoutes = require("./routes/studio")
+const projectImagesRoutes = require("./routes/projectImages")
 
 const app = express()
 
@@ -34,18 +35,23 @@ const allowed = (process.env.CORS_ALLOW_ORIGINS || "")
 	.map((s) => s.trim())
 	.filter(Boolean)
 
-app.use(
-	cors({
-		origin(origin, cb) {
-			// allow no-origin (curl/healthchecks) and any whitelisted
-			if (!origin || allowed.includes(origin)) return cb(null, true)
-			return cb(new Error("Not allowed by CORS"))
-		},
-		methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-		allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
-		credentials: false,
-	}),
-)
+const corsOptions = {
+	origin(origin, cb) {
+		if (!origin || allowed.includes(origin)) return cb(null, true)
+		return cb(new Error("Not allowed by CORS"))
+	},
+	methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+	allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
+	credentials: false,
+}
+
+app.use(cors(corsOptions))
+
+// ✅ Explicitly handle preflight for all routes (lets OPTIONS pass without auth)
+app.options("*", cors(corsOptions))
+
+// body parser stays small so big payloads can't sneak in via JSON
+app.use(express.json({limit: "2mb"}))
 
 /** Basic rate limit for public APIs */
 app.use(
@@ -58,14 +64,6 @@ app.use(
 	}),
 )
 
-/** Static uploads (mounted disk on Render or local folder) */
-// const UPLOAD_DIR =
-// 	process.env.UPLOAD_DIR || path.join(__dirname, "..", "uploads")
-// if (!fs.existsSync(UPLOAD_DIR)) {
-// 	fs.mkdirSync(UPLOAD_DIR, {recursive: true})
-// }
-// app.use("/uploads", express.static(UPLOAD_DIR))
-
 /** Healthcheck */
 app.get("/health", (_req, res) => res.json({ok: true}))
 
@@ -73,6 +71,7 @@ app.get("/health", (_req, res) => res.json({ok: true}))
 app.use("/auth", authRoutes)
 app.use("/project-types", projectTypeRoutes)
 app.use("/projects", projectRoutes)
+app.use("/projects", projectImagesRoutes) // now handles all image management
 app.use("/studio", studioRoutes)
 
 /** 404 */
