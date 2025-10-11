@@ -5,6 +5,7 @@ const fsp = fs.promises
 const {pool} = require("../db")
 const {requireAdmin} = require("../middleware/requireAdmin")
 const {toPublicFileUrl, toPublicTransformedUrl} = require("../storage/supabase")
+const {queueRebuild} = require("../utils/rebuild")
 
 const r = express.Router()
 
@@ -27,22 +28,16 @@ function variantKeyFromMain(mainKey, width) {
 
 // GET /projects/public
 r.get("/public", async (req, res) => {
-	const typeId = Number.isFinite(+req.query.project_type_id)
-		? +req.query.project_type_id
-		: null
 	const qRaw = (req.query.q ?? "").toString().trim()
 	const q = qRaw.length ? `%${qRaw}%` : null
 
 	const cond = []
 	const params = []
 
-	if (typeId) {
-		cond.push(`p.project_type_id = ?`)
-		params.push(typeId)
-	}
 	if (q) {
-		cond.push(`(p.title LIKE ? OR p.location LIKE ? OR p.scope LIKE ?)`)
-		params.push(q, q, q)
+		// use LOWER() for case-insensitive matching
+		cond.push(`LOWER(p.title) LIKE LOWER(?)`)
+		params.push(q)
 	}
 
 	const where = cond.length ? `WHERE ${cond.join(" AND ")}` : ""
@@ -76,7 +71,6 @@ r.get("/public", async (req, res) => {
 
 		const data = rows.map((r) => ({
 			...r,
-			// CHANGE: use Supabase public URL from object key
 			cover_url: r.cover_file_path
 				? toPublicFileUrl(r.cover_file_path)
 				: null,
@@ -218,6 +212,8 @@ r.post("/admin", async (req, res) => {
 		],
 	)
 
+	queueRebuild(result.insertId)
+
 	res.status(201).json({id: result.insertId})
 })
 
@@ -259,6 +255,9 @@ r.patch("/admin/:id", async (req, res) => {
 	const [result] = await pool.execute(sql, params)
 	if (result.affectedRows === 0)
 		return res.status(404).json({error: "not found"})
+
+	queueRebuild(id)
+
 	res.status(204).end()
 })
 
@@ -289,6 +288,8 @@ r.delete("/admin/:id", async (req, res) => {
 		)
 		fsp.unlink(abs).catch(() => {})
 	}
+
+	queueRebuild(id)
 
 	res.status(204).end()
 })

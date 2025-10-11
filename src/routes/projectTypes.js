@@ -103,16 +103,41 @@ r.patch("/:id", async (req, res) => {
  */
 r.delete("/:id", async (req, res) => {
 	const id = Number(req.params.id)
-	if (!Number.isInteger(id))
+	if (!Number.isInteger(id)) {
 		return res.status(400).json({error: "invalid id"})
+	}
 
-	const [result] = await pool.execute(
-		"DELETE FROM project_types WHERE id = ?",
-		[id],
-	)
-	if (result.affectedRows === 0)
-		return res.status(404).json({error: "not found"})
-	res.status(204).end()
+	try {
+		// Fast existence check: stop early if any project uses this type
+		const [rows] = await pool.execute(
+			"SELECT 1 FROM projects WHERE project_type_id = ? LIMIT 1",
+			[id],
+		)
+		if (rows.length > 0) {
+			return res.status(409).json({
+				error: "Cannot Delete: Project Type is used by existing Project",
+			})
+		}
+
+		const [result] = await pool.execute(
+			"DELETE FROM project_types WHERE id = ?",
+			[id],
+		)
+
+		if (result.affectedRows === 0) {
+			return res.status(404).json({error: "not found"})
+		}
+
+		return res.status(204).end()
+	} catch (err) {
+		if (err && err.code === "ER_ROW_IS_REFERENCED_2") {
+			return res.status(409).json({
+				error: "cannot delete: project type is used by existing projects",
+			})
+		}
+		console.error(err)
+		return res.status(500).json({error: "internal error"})
+	}
 })
 
 module.exports = r
