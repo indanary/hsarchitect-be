@@ -3,16 +3,14 @@ import fetch from "node-fetch"
 
 const GH_OWNER = process.env.GH_OWNER
 const GH_REPO = process.env.GH_REPO
-const GH_PAT = process.env.GH_PAT // classic PAT with repo + workflow scopes
+const GH_PAT = process.env.GH_PAT // classic PAT with repo + workflow
 const GH_REF = process.env.GH_REF || "prod"
-const GH_WORKFLOW_ID = process.env.GH_WORKFLOW_ID // set this once from the curl-list output
+const GH_WORKFLOW_ID = process.env.GH_WORKFLOW_ID // numeric id
 
-async function triggerRebuildForSlugs(slugs = [], reason = "projects_changed") {
-	if (!GH_OWNER || !GH_REPO || !GH_PAT || !GH_WORKFLOW_ID) {
-		throw new Error(
-			"GH_OWNER, GH_REPO, GH_PAT, GH_WORKFLOW_ID are required",
-		)
-	}
+async function triggerRebuildForSlugs(
+	slugs = [],
+	_reason = "projects_changed",
+) {
 	const payloadSlugs = Array.isArray(slugs) ? slugs.map(String) : []
 	const url = `https://api.github.com/repos/${GH_OWNER}/${GH_REPO}/actions/workflows/${GH_WORKFLOW_ID}/dispatches`
 
@@ -20,8 +18,8 @@ async function triggerRebuildForSlugs(slugs = [], reason = "projects_changed") {
 		ref: GH_REF,
 		inputs: {
 			deploy: "true",
-			slugs: JSON.stringify(payloadSlugs),
-			reason,
+			slugs: JSON.stringify(payloadSlugs), // must be string
+			// reason: <REMOVE THIS>               // ✖ don't send reason unless YAML defines it
 		},
 	}
 
@@ -40,20 +38,6 @@ async function triggerRebuildForSlugs(slugs = [], reason = "projects_changed") {
 		throw new Error(`workflow_dispatch failed: ${r.status} ${text}`)
 	}
 	return true
-}
-
-let rebuildTimer = null
-export function queueRebuild(projectId) {
-	const ids =
-		projectId == null
-			? []
-			: Array.isArray(projectId)
-			? projectId
-			: [projectId]
-	if (rebuildTimer) clearTimeout(rebuildTimer)
-	rebuildTimer = setTimeout(() => {
-		triggerRebuildForSlugs(ids).catch(console.error)
-	}, 10_000)
 }
 
 export {triggerRebuildForSlugs as triggerRebuild}
