@@ -1,24 +1,25 @@
 // src/utils/rebuild.js
 import fetch from "node-fetch"
 
-const GH_OWNER = process.env.GH_OWNER // e.g. "indanary"
-const GH_REPO = process.env.GH_REPO // e.g. "hsarchitect-portfolio"
-const GH_PAT = process.env.GH_PAT // PAT with Actions (workflows) write
-const GH_REF = process.env.GH_REF || "prod" // branch where your workflow file lives
-const WORKFLOW_FILE = process.env.GH_WORKFLOW_FILE || "deploy.yml" // .github/workflows/deploy.yml
+const GH_OWNER = process.env.GH_OWNER
+const GH_REPO = process.env.GH_REPO
+const GH_PAT = process.env.GH_PAT // classic PAT with repo + workflow scopes
+const GH_REF = process.env.GH_REF || "prod"
+const GH_WORKFLOW_ID = process.env.GH_WORKFLOW_ID // set this once from the curl-list output
 
 async function triggerRebuildForSlugs(slugs = [], reason = "projects_changed") {
-	if (!GH_OWNER || !GH_REPO || !GH_PAT) {
-		throw new Error("GH_OWNER, GH_REPO, GH_PAT are required")
+	if (!GH_OWNER || !GH_REPO || !GH_PAT || !GH_WORKFLOW_ID) {
+		throw new Error(
+			"GH_OWNER, GH_REPO, GH_PAT, GH_WORKFLOW_ID are required",
+		)
 	}
 	const payloadSlugs = Array.isArray(slugs) ? slugs.map(String) : []
+	const url = `https://api.github.com/repos/${GH_OWNER}/${GH_REPO}/actions/workflows/${GH_WORKFLOW_ID}/dispatches`
 
-	const url = `https://api.github.com/repos/${GH_OWNER}/${GH_REPO}/actions/workflows/${WORKFLOW_FILE}/dispatches`
 	const body = {
-		ref: GH_REF, // branch to run on (e.g., "prod")
+		ref: GH_REF,
 		inputs: {
-			deploy: "true", // or "false" to build only
-			// pass slugs JSON as a string; workflow picks this up into PRERENDER_SLUGS/.prerender_payload.json
+			deploy: "true",
 			slugs: JSON.stringify(payloadSlugs),
 			reason,
 		},
@@ -41,7 +42,6 @@ async function triggerRebuildForSlugs(slugs = [], reason = "projects_changed") {
 	return true
 }
 
-// Optional debounce for multiple edits
 let rebuildTimer = null
 export function queueRebuild(projectId) {
 	const ids =
