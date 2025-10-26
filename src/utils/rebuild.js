@@ -1,29 +1,43 @@
 // src/utils/rebuild.js
-import fetch from "node-fetch"
+// Clean, minimal version — only what `projects.js` needs.
+
+const fetchFn = global.fetch
+	? global.fetch.bind(global)
+	: (...args) => import("node-fetch").then((m) => m.default(...args))
 
 const GH_OWNER = process.env.GH_OWNER
 const GH_REPO = process.env.GH_REPO
-const GH_PAT = process.env.GH_PAT // classic PAT with repo + workflow
+const GH_PAT = process.env.GH_PAT // Classic PAT: repo + workflow
 const GH_REF = process.env.GH_REF || "prod"
-const GH_WORKFLOW_ID = process.env.GH_WORKFLOW_ID // numeric id
+const GH_WORKFLOW_ID = process.env.GH_WORKFLOW_ID // Numeric workflow ID (recommended)
+const GH_WORKFLOW_FILE = process.env.GH_WORKFLOW_FILE || "deploy.yml"
 
-async function triggerRebuildForSlugs(
-	slugs = [],
-	_reason = "projects_changed",
-) {
-	const payloadSlugs = Array.isArray(slugs) ? slugs.map(String) : []
-	const url = `https://api.github.com/repos/${GH_OWNER}/${GH_REPO}/actions/workflows/${GH_WORKFLOW_ID}/dispatches`
+// Build correct API URL for workflow_dispatch
+function apiUrl() {
+	if (GH_WORKFLOW_ID) {
+		return `https://api.github.com/repos/${GH_OWNER}/${GH_REPO}/actions/workflows/${GH_WORKFLOW_ID}/dispatches`
+	}
+	return `https://api.github.com/repos/${GH_OWNER}/${GH_REPO}/actions/workflows/${GH_WORKFLOW_FILE}/dispatches`
+}
 
+// Sends workflow_dispatch to GitHub (not exported)
+async function triggerRebuildForSlugs(slugs = [], deploy = true) {
+	if (!GH_OWNER || !GH_REPO || !GH_PAT) {
+		throw new Error(
+			"Missing GH_OWNER, GH_REPO, or GH_PAT environment variables",
+		)
+	}
+
+	const url = apiUrl()
 	const body = {
 		ref: GH_REF,
 		inputs: {
-			deploy: "true",
-			slugs: JSON.stringify(payloadSlugs), // must be string
-			// reason: <REMOVE THIS>               // ✖ don't send reason unless YAML defines it
+			deploy: deploy ? "true" : "false",
+			slugs: JSON.stringify(slugs.map(String)),
 		},
 	}
 
-	const r = await fetch(url, {
+	const res = await fetchFn(url, {
 		method: "POST",
 		headers: {
 			Accept: "application/vnd.github+json",
@@ -33,11 +47,33 @@ async function triggerRebuildForSlugs(
 		body: JSON.stringify(body),
 	})
 
-	if (!r.ok) {
-		const text = await r.text()
-		throw new Error(`workflow_dispatch failed: ${r.status} ${text}`)
+	if (res.status !== 204) {
+		const text = await res.text()
+		throw new Error(`workflow_dispatch failed: ${res.status} ${text}`)
 	}
-	return true
 }
 
-export {triggerRebuildForSlugs as triggerRebuild}
+// Debounce & batch multiple rebuild calls
+let timer = null
+let pendingIds = new Set()
+
+function queueRebuild(idOrList, {deploy = true, debounceMs = 5000} = {}) {
+	const ids = Array.isArray(idOrList) ? idOrList : [idOrList]
+	ids.forEach((id) => pendingIds.add(String(id)))
+
+	if (timer) clearTimeout(timer)
+
+	timer = setTimeout(() => {
+		const slugs = [...pendingIds]
+		pendingIds.clear()
+		timer = null
+
+		triggerRebuildForSlugs(slugs, deploy).catch((err) =>
+			console.error("[rebuild] failed:", err.message),
+		)
+	}, debounceMs)
+}
+
+module.exports = {
+	queueRebuild,
+}
