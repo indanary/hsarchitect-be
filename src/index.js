@@ -12,6 +12,7 @@ const projectTypeRoutes = require("./routes/projectTypes")
 const projectRoutes = require("./routes/projects")
 const studioRoutes = require("./routes/studio")
 const projectImagesRoutes = require("./routes/projectImages")
+const contactRoutes = require("./routes/contact")
 
 const app = express()
 
@@ -72,6 +73,7 @@ app.use("/project-types", projectTypeRoutes)
 app.use("/projects", projectRoutes)
 app.use("/projects", projectImagesRoutes) // image management
 app.use("/studio", studioRoutes)
+app.use("/contact", contactRoutes)
 
 /** 404 */
 app.use((_req, res) => res.status(404).json({error: "Not found"}))
