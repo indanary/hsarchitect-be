@@ -26,6 +26,7 @@
 		"mysql2": "^3.14.4",
 		"node-fetch": "^3.3.2",
 		"nodemailer": "^7.0.10",
+		"resend": "^6.5.2",
 		"sharp": "^0.34.4",
 		"validator": "^13.15.23"
 	}
