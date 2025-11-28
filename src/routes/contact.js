@@ -54,14 +54,17 @@ r.post("/", async (req, res) => {
 		// Set these env vars in your production env: SMTP_HOST, SMTP_PORT, SMTP_SECURE, SMTP_USER, SMTP_PASS
 		const transporter = nodemailer.createTransport({
 			host: process.env.SMTP_HOST || "mail.hsarchitect.id",
-			port: Number(process.env.SMTP_PORT || 465),
-			secure: (process.env.SMTP_SECURE || "true") === "true", // true for 465, false for 587
+			port: Number(process.env.SMTP_PORT || 587),
+			secure: false, // STARTTLS on 587
 			auth: {
 				user: process.env.SMTP_USER || "hsas1579@hsarchitect.id",
-				pass: process.env.SMTP_PASS || "", // set in env
+				pass: process.env.SMTP_PASS || "", // make sure this is set in env
 			},
-			// optional: increase connection timeout
-			// connectionTimeout: 10_000,
+			tls: {
+				// allow self-signed / cPanel cert mismatch if any
+				rejectUnauthorized: false,
+			},
+			connectionTimeout: 10_000, // optional, 10 seconds
 		})
 
 		// Build email
