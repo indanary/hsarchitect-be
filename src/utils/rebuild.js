@@ -74,6 +74,14 @@ function queueRebuild(idOrList, {deploy = true, debounceMs = 5000} = {}) {
 	}, debounceMs)
 }
 
+// New helper: rebuild “everything” (no specific slugs)
+function queueRebuildAll({deploy = true, debounceMs = 5000} = {}) {
+	// Just delegate to queueRebuild with a special marker or empty list.
+	// I prefer a marker so you see it in logs:
+	queueRebuild("__ALL__", {deploy, debounceMs})
+}
+
 module.exports = {
 	queueRebuild,
+	queueRebuildAll,
 }

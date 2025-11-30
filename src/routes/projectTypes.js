@@ -1,6 +1,7 @@
 const express = require("express")
 const {pool} = require("../db")
 const {requireAdmin} = require("../middleware/requireAdmin")
+const {queueRebuildAll} = require("../utils/rebuild")
 
 const r = express.Router()
 
@@ -56,7 +57,10 @@ r.post("/", async (req, res) => {
 			"INSERT INTO project_types (project_type) VALUES (?)",
 			[project_type],
 		)
+
 		res.status(201).json({id: result.insertId, project_type})
+
+		queueRebuildAll()
 	} catch (e) {
 		if (e && e.code === "ER_DUP_ENTRY") {
 			return res.status(409).json({error: "project_type already exists"})
@@ -89,7 +93,10 @@ r.patch("/:id", async (req, res) => {
 		)
 		if (result.affectedRows === 0)
 			return res.status(404).json({error: "not found"})
+
 		res.status(204).end()
+
+		queueRebuildAll()
 	} catch (e) {
 		if (e && e.code === "ER_DUP_ENTRY") {
 			return res.status(409).json({error: "project_type already exists"})
@@ -128,7 +135,9 @@ r.delete("/:id", async (req, res) => {
 			return res.status(404).json({error: "not found"})
 		}
 
-		return res.status(204).end()
+		res.status(204).end()
+
+		queueRebuildAll()
 	} catch (err) {
 		if (err && err.code === "ER_ROW_IS_REFERENCED_2") {
 			return res.status(409).json({
