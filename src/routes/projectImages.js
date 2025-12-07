@@ -70,41 +70,75 @@ r.post("/admin/:id/images", async (req, res) => {
 	const tasks = []
 	let fileCount = 0
 	let hadLimitError = false
+	let fatalError = false
 	const perFileErrors = []
+
+	// Track all controllers & sharp instances so we can abort everything
+	const controllers = []
+	const transformers = []
+
+	function abortAll(err) {
+		fatalError = true
+		for (const t of transformers) {
+			try {
+				t.destroy(err)
+			} catch {}
+		}
+		for (const c of controllers) {
+			try {
+				c.abort(err)
+			} catch {}
+		}
+	}
 
 	let bb
 	try {
 		bb = Busboy({
 			headers: req.headers,
-			limits: {files: 10, fileSize: MAX_FILE_SIZE},
+			limits: {files: 3, fileSize: MAX_FILE_SIZE}, // <= tightened
 		})
 	} catch {
 		bb = new Busboy({
 			headers: req.headers,
-			limits: {files: 10, fileSize: MAX_FILE_SIZE},
+			limits: {files: 3, fileSize: MAX_FILE_SIZE},
 		})
 	}
 
 	bb.on("file", (_name, file, info) => {
 		const {filename, mimeType} = info || {}
-		if (!mimeType || !/^image\//i.test(mimeType)) {
-			file.resume() // skip non-images
+
+		if (fatalError) {
+			// We already decided to fail the whole batch, just drain
+			file.resume()
 			return
 		}
+
+		if (!mimeType || !/^image\//i.test(mimeType)) {
+			file.resume()
+			return
+		}
+
 		fileCount++
 
-		// Build keys
 		const base = objectKeyForProject(projectId, filename)
 		const key1600 = `${base}@1600w.webp`
 
-		// Pipeline: source -> (rotate, resize->1600, webp)
+		// Faster sharp config: use fastShrinkOnLoad, reasonable quality/effort
 		const s1600 = sharp({sequentialRead: true})
 			.rotate()
-			.resize({width: 1600, withoutEnlargement: true})
-			.webp({quality: 78})
+			.resize({
+				width: 1600,
+				withoutEnlargement: true,
+				fit: "inside",
+				fastShrinkOnLoad: true,
+			})
+			.webp({quality: 78, effort: 4})
 
-		// Abortable upload
+		transformers.push(s1600)
+
 		const ac = new AbortController()
+		controllers.push(ac)
+
 		const put1600 = uploadStreamToSupabase({
 			bucket,
 			key: key1600,
@@ -114,7 +148,6 @@ r.post("/admin/:id/images", async (req, res) => {
 			signal: ac.signal,
 		})
 
-		// Wire error/limit handling
 		file.on("limit", () => {
 			hadLimitError = true
 			const err = new Error("file_too_large")
@@ -123,14 +156,8 @@ r.post("/admin/:id/images", async (req, res) => {
 				code: "FILE_TOO_LARGE",
 				message: `File exceeded ${MAX_FILE_SIZE} bytes`,
 			})
-			// Stop the pipeline & outgoing fetch
-			try {
-				s1600.destroy(err)
-			} catch {}
-			try {
-				ac.abort(err)
-			} catch {}
-			file.resume() // drain remaining input safely
+			abortAll(err) // <= abort everything
+			file.resume()
 		})
 
 		file.on("error", (err) => {
@@ -139,43 +166,32 @@ r.post("/admin/:id/images", async (req, res) => {
 				code: "FILE_STREAM_ERROR",
 				message: String(err?.message || err),
 			})
-			try {
-				s1600.destroy(err)
-			} catch {}
-			try {
-				ac.abort(err)
-			} catch {}
+			abortAll(err)
 		})
 
 		s1600.on("error", (err) => {
-			// Common case: truncated JPEG -> VipsJpeg: premature end...
 			perFileErrors.push({
 				filename,
 				code: "IMAGE_PROCESS_ERROR",
 				message: String(err?.message || err),
 			})
-			try {
-				ac.abort(err)
-			} catch {}
+			abortAll(err)
 		})
 
-		// Start streaming
 		file.pipe(s1600)
 
 		const task = put1600
 			.then(() => {
-				// Only record success if we didn't trip errors for this file
-				// (If aborted, promise rejects and will be caught below)
+				if (fatalError) return // we already decided to fail whole batch
 				rows.push([projectId, key1600, null, 0])
 				uploaded.push({
 					file_path: key1600,
 					file_url: toPublicFileUrl(key1600),
-					// 800w thumbnail is generated on-the-fly (no second encode)
 					thumb_url: toPublicTransformedUrl(key1600, {width: 800}),
 				})
 			})
 			.catch((err) => {
-				// Already recorded a per-file error above; ensure we note it if not
+				// Already recorded in perFileErrors usually
 				if (!perFileErrors.find((e) => e.filename === filename)) {
 					perFileErrors.push({
 						filename,
@@ -189,20 +205,23 @@ r.post("/admin/:id/images", async (req, res) => {
 	})
 
 	bb.on("error", (err) => {
+		abortAll(err)
 		return res
 			.status(500)
 			.json({error: "upload_failed", detail: String(err?.message || err)})
 	})
 
 	bb.on("finish", async () => {
-		if (!fileCount)
+		if (!fileCount) {
 			return res.status(400).json({error: "no files uploaded"})
+		}
 
 		try {
 			await Promise.all(tasks)
 
-			// If any file exceeded the size limit, return 413 and do NOT insert
+			// If we had a file size limit error, fail the whole batch
 			if (hadLimitError) {
+				// Optional: delete any already-uploaded objects here.
 				return res.status(413).json({
 					error: "file_too_large",
 					max_bytes: MAX_FILE_SIZE,
@@ -210,7 +229,7 @@ r.post("/admin/:id/images", async (req, res) => {
 				})
 			}
 
-			// If there were other per-file errors and none succeeded, surface them
+			// If everything failed
 			if (uploaded.length === 0 && perFileErrors.length) {
 				return res
 					.status(400)
