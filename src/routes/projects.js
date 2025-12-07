@@ -88,27 +88,37 @@ r.get("/public/:id", async (req, res) => {
 	const id = toInt(req.params.id)
 	if (!id) return res.status(400).json({error: "invalid id"})
 
-	// 1) fetch project (only published)
+	// 1) fetch project
 	const [rows] = await pool.execute(
 		`SELECT id, title, location, description, project_type_id, scope, year, status, area
-     FROM projects
-     WHERE id = ?
-     LIMIT 1`,
+		 FROM projects
+		 WHERE id = ?
+		 LIMIT 1`,
 		[id],
 	)
 	const project = rows[0]
 	if (!project) return res.status(404).json({error: "not found"})
 
-	// 2) fetch ordered images
+	// 2) fetch the project type label
+	let project_type = null
+	if (project.project_type_id) {
+		const [types] = await pool.execute(
+			`SELECT project_type FROM project_types WHERE id = ? LIMIT 1`,
+			[project.project_type_id],
+		)
+		project_type = types[0]?.project_type || null
+	}
+
+	// 3) fetch ordered images
 	const [imgs] = await pool.execute(
 		`SELECT id, file_path, alt, sort_order
-     FROM project_images
-     WHERE project_id = ?
-     ORDER BY sort_order ASC, id ASC`,
+		 FROM project_images
+		 WHERE project_id = ?
+		 ORDER BY sort_order ASC, id ASC`,
 		[id],
 	)
 
-	// 3) map to include absolute URL for direct rendering on FE
+	// 4) transform images
 	const images = imgs.map((img) => {
 		const file_url = img.file_path ? toPublicFileUrl(img.file_path) : null
 		const thumb_url = img.file_path
@@ -117,10 +127,11 @@ r.get("/public/:id", async (req, res) => {
 		return {...img, file_url, thumb_url}
 	})
 
-	// 4) respond
+	// 5) respond
 	res.json({
 		...project,
-		images, // array of { id, file_path, file_url, alt, sort_order }
+		project_type, // <-- added here
+		images,
 	})
 })
 
