@@ -11,15 +11,46 @@ const isValidType = (t) => typeof t === "string" && TYPES.has(t)
 /** GET /studio/:type  -> { id, type, description } or 404 */
 r.get("/:type", async (req, res) => {
 	const type = String(req.params.type || "").toLowerCase()
-	if (!isValidType(type)) return res.status(400).json({error: "invalid type"})
 
-	const [rows] = await pool.execute(
-		"SELECT id, type, description FROM studio WHERE type = ? LIMIT 1",
-		[type],
-	)
-	const row = rows[0]
-	if (!row) return res.status(404).json({error: "not found"})
-	res.json(row)
+	// Invalid type → return safe response
+	if (!isValidType(type)) {
+		return res.json({
+			success: false,
+			data: null,
+			message: "Invalid type",
+		})
+	}
+
+	try {
+		const [rows] = await pool.execute(
+			"SELECT id, type, description FROM studio WHERE type = ? LIMIT 1",
+			[type],
+		)
+
+		const row = rows[0]
+
+		// Not found → safe fallback response
+		if (!row) {
+			return res.json({
+				success: false,
+				data: null,
+				message: "Data not found",
+			})
+		}
+
+		// Success response
+		return res.json({
+			success: true,
+			data: row,
+		})
+	} catch (err) {
+		// Internal DB/server error → still safe response
+		return res.json({
+			success: false,
+			data: null,
+			message: "Something went wrong",
+		})
+	}
 })
 
 // ========== ADMIN (UPSERT/EDIT/DELETE) ==========
