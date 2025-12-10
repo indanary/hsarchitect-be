@@ -1,6 +1,7 @@
 const express = require("express")
 const {pool} = require("../db")
 const {requireAdmin} = require("../middleware/requireAdmin")
+const {queueRebuildAll} = require("../utils/rebuild")
 
 const r = express.Router()
 
@@ -76,6 +77,9 @@ r.put("/admin/:type", async (req, res) => {
 		"SELECT id, type, description FROM studio WHERE type = ? LIMIT 1",
 		[type],
 	)
+
+	queueRebuildAll()
+
 	res.status(200).json(rows[0])
 })
 
@@ -95,6 +99,9 @@ r.patch("/admin/:type", async (req, res) => {
 	)
 	if (result.affectedRows === 0)
 		return res.status(404).json({error: "not found"})
+
+	queueRebuildAll()
+
 	res.status(204).end()
 })
 
@@ -108,6 +115,9 @@ r.delete("/admin/:type", async (req, res) => {
 	])
 	if (result.affectedRows === 0)
 		return res.status(404).json({error: "not found"})
+
+	queueRebuildAll()
+
 	res.status(204).end()
 })
 
