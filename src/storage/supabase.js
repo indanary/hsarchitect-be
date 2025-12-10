@@ -43,14 +43,9 @@ async function createSignedUploadForProject(projectId, originalName) {
 	return {key, token: data.token}
 }
 
-function toPublicTransformedUrl(objectPath, transform = {width: 800}) {
-	const base = process.env.SUPABASE_URL.replace(/\/+$/, "")
-	const params = new URLSearchParams(transform)
-
-	// Important: must NOT encode "/" but must encode special characters.
-	const safePath = objectPath.split("/").map(encodeURIComponent).join("/")
-
-	return `${base}/storage/v1/render/image/public/${bucket}/${safePath}?${params.toString()}`
+function toPublicTransformedUrl(objectPath, _transform = {width: 800}) {
+	// Fallback: no actual transform, just use regular public URL
+	return toPublicFileUrl(objectPath)
 }
 
 module.exports = {

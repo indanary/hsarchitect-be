@@ -122,9 +122,8 @@ r.get("/public/:id", async (req, res) => {
 	// We now use Supabase's transform API directly, so we pass the ORIGINAL key
 	const images = imgs.map((img) => {
 		const file_url = img.file_path ? toPublicFileUrl(img.file_path) : null
-		const thumb_url = img.file_path
-			? toPublicTransformedUrl(img.file_path, {width: 800})
-			: null
+		// No transform: just reuse file_url for thumb_url
+		const thumb_url = file_url
 
 		return {...img, file_url, thumb_url}
 	})
