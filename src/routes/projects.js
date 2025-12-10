@@ -119,19 +119,28 @@ r.get("/public/:id", async (req, res) => {
 	)
 
 	// 4) transform images
+	// We now use Supabase's transform API directly, so we pass the ORIGINAL key
 	const images = imgs.map((img) => {
 		const file_url = img.file_path ? toPublicFileUrl(img.file_path) : null
 		const thumb_url = img.file_path
-			? toPublicTransformedUrl(variantKeyFromMain(img.file_path, 800))
+			? toPublicTransformedUrl(img.file_path, {width: 800})
 			: null
+
 		return {...img, file_url, thumb_url}
 	})
 
-	// 5) respond
+	// 5) derive cover image from first image (if any)
+	const cover_url = images[0]?.file_url || null
+	const cover_thumb_url = images[0]?.thumb_url || null
+
+	// 6) respond
 	res.json({
 		...project,
-		project_type, // <-- added here
+		project_type,
 		images,
+		cover_url,
+		cover_thumb_url,
+		cover: cover_url, // alias for existing FE code
 	})
 })
 
