@@ -5,207 +5,150 @@ const Busboy = require("busboy")
 const {pool} = require("../db")
 const {requireAdmin} = require("../middleware/requireAdmin")
 const {
+	supabaseAdmin,
 	bucket,
 	objectKeyForProject,
 	toPublicFileUrl,
-	toPublicTransformedUrl, // ensure this is exported in storage/supabase.js
+	toPublicTransformedUrl,
 } = require("../storage/supabase")
 
 const r = express.Router()
 
 // Configurable max upload size (bytes). Default 20MB.
-// You can set UPLOAD_MAX_BYTES in your Render env if needed.
+// You can set UPLOAD_MAX_BYTES in env if needed.
 const MAX_FILE_SIZE = Number(process.env.UPLOAD_MAX_BYTES || 20 * 1024 * 1024)
+const MAX_FILES = 3
 
 // Be conservative on resources
 sharp.cache(false)
 sharp.concurrency(1)
 
-/** Stream upload to Supabase Storage via REST */
-async function uploadStreamToSupabase({
-	bucket,
-	key,
-	body,
-	contentType = "application/octet-stream",
-	upsert = false,
-	signal,
-}) {
-	const base = process.env.SUPABASE_URL
-	const token = process.env.SUPABASE_SERVICE_ROLE_KEY
-	if (!base || !token)
-		throw new Error("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY")
-
-	const url = `${base.replace(
-		/\/+$/,
-		"",
-	)}/storage/v1/object/${encodeURIComponent(bucket)}/${key}`
-	const resp = await fetch(url, {
-		method: "POST",
-		headers: {
-			Authorization: `Bearer ${token}`,
-			"Content-Type": contentType,
-			"x-upsert": upsert ? "true" : "false",
-			"Cache-Control": "31536000, immutable",
-		},
-		body, // Readable stream (sharp pipeline)
-		duplex: "half", // required for streaming bodies in Node fetch
-		signal,
-	})
-	if (!resp.ok) {
-		const text = await resp.text().catch(() => "")
-		throw new Error(`Supabase upload failed (${resp.status}): ${text}`)
-	}
-}
-
 /* ========== ADMIN: IMAGES (manage) ========== */
 r.use(requireAdmin)
 
-/** POST /projects/admin/:id/images  (multipart: files[]) — streaming, one size only (1600w) */
+/**
+ * POST /projects/admin/:id/images
+ * multipart: files[]
+ * - up to 3 files
+ * - each <= 20MB
+ * - processed to 1600w webp
+ */
 r.post("/admin/:id/images", async (req, res) => {
 	const projectId = Number(req.params.id)
 	if (!projectId) return res.status(400).json({error: "invalid id"})
 
-	const rows = []
-	const uploaded = []
-	const tasks = []
 	let fileCount = 0
-	let hadLimitError = false
-	let fatalError = false
-	const perFileErrors = []
-
-	// Track all controllers & sharp instances so we can abort everything
-	const controllers = []
-	const transformers = []
-
-	function abortAll(err) {
-		fatalError = true
-		for (const t of transformers) {
-			try {
-				t.destroy(err)
-			} catch {}
-		}
-		for (const c of controllers) {
-			try {
-				c.abort(err)
-			} catch {}
-		}
-	}
+	const uploaded = []
+	const rows = []
+	const errors = []
+	const tasks = []
 
 	let bb
 	try {
 		bb = Busboy({
 			headers: req.headers,
-			limits: {files: 3, fileSize: MAX_FILE_SIZE}, // <= tightened
+			limits: {
+				fileSize: MAX_FILE_SIZE,
+				files: MAX_FILES,
+			},
 		})
 	} catch {
 		bb = new Busboy({
 			headers: req.headers,
-			limits: {files: 3, fileSize: MAX_FILE_SIZE},
+			limits: {
+				fileSize: MAX_FILE_SIZE,
+				files: MAX_FILES,
+			},
 		})
 	}
 
-	bb.on("file", (_name, file, info) => {
-		const {filename, mimeType} = info || {}
-
-		if (fatalError) {
-			// We already decided to fail the whole batch, just drain
-			file.resume()
-			return
-		}
-
-		if (!mimeType || !/^image\//i.test(mimeType)) {
-			file.resume()
-			return
-		}
-
+	bb.on("file", (fieldName, file, info = {}) => {
+		const {filename = "file", mimeType = ""} = info
 		fileCount++
 
-		const base = objectKeyForProject(projectId, filename)
-		const key1600 = `${base}@1600w.webp`
+		// Reject non-images
+		if (!mimeType.startsWith("image/")) {
+			file.resume()
+			errors.push({filename, error: "not an image"})
+			return
+		}
 
-		// Faster sharp config: use fastShrinkOnLoad, reasonable quality/effort
-		const s1600 = sharp({sequentialRead: true})
-			.rotate()
-			.resize({
-				width: 1600,
-				withoutEnlargement: true,
-				fit: "inside",
-				fastShrinkOnLoad: true,
-			})
-			.webp({quality: 78, effort: 4})
+		const chunks = []
 
-		transformers.push(s1600)
-
-		const ac = new AbortController()
-		controllers.push(ac)
-
-		const put1600 = uploadStreamToSupabase({
-			bucket,
-			key: key1600,
-			body: s1600,
-			contentType: "image/webp",
-			upsert: false,
-			signal: ac.signal,
+		file.on("data", (chunk) => {
+			chunks.push(chunk)
 		})
 
 		file.on("limit", () => {
-			hadLimitError = true
-			const err = new Error("file_too_large")
-			perFileErrors.push({
+			errors.push({
 				filename,
-				code: "FILE_TOO_LARGE",
-				message: `File exceeded ${MAX_FILE_SIZE} bytes`,
+				error: `file too large (max ${MAX_FILE_SIZE} bytes)`,
 			})
-			abortAll(err) // <= abort everything
 			file.resume()
 		})
 
-		file.on("error", (err) => {
-			perFileErrors.push({
-				filename,
-				code: "FILE_STREAM_ERROR",
-				message: String(err?.message || err),
-			})
-			abortAll(err)
-		})
+		// Track async work via a task promise
+		const task = new Promise((resolve) => {
+			file.on("end", async () => {
+				try {
+					if (chunks.length === 0) {
+						errors.push({filename, error: "empty file"})
+						return resolve()
+					}
 
-		s1600.on("error", (err) => {
-			perFileErrors.push({
-				filename,
-				code: "IMAGE_PROCESS_ERROR",
-				message: String(err?.message || err),
-			})
-			abortAll(err)
-		})
+					const buffer = Buffer.concat(chunks)
 
-		file.pipe(s1600)
+					// Process with sharp to 1600w WEBP
+					const outBuf = await sharp(buffer)
+						.rotate()
+						.resize({width: 1600, withoutEnlargement: true})
+						.webp({quality: 78})
+						.toBuffer()
 
-		const task = put1600
-			.then(() => {
-				if (fatalError) return // we already decided to fail whole batch
-				rows.push([projectId, key1600, null, 0])
-				uploaded.push({
-					file_path: key1600,
-					file_url: toPublicFileUrl(key1600),
-					thumb_url: toPublicTransformedUrl(key1600, {width: 800}),
-				})
-			})
-			.catch((err) => {
-				// Already recorded in perFileErrors usually
-				if (!perFileErrors.find((e) => e.filename === filename)) {
-					perFileErrors.push({
-						filename,
-						code: "UPLOAD_ERROR",
-						message: String(err?.message || err),
+					// Generate key using your existing helper
+					const baseKey = objectKeyForProject(projectId, filename)
+					const key1600 = `${baseKey}@1600w.webp`
+
+					const {error} = await supabaseAdmin.storage
+						.from(bucket)
+						.upload(key1600, outBuf, {
+							contentType: "image/webp",
+							upsert: false,
+						})
+
+					if (error) {
+						errors.push({filename, error: error.message})
+						return resolve()
+					}
+
+					// Record DB row + response payload
+					rows.push([projectId, key1600, null, 0])
+					uploaded.push({
+						file_path: key1600,
+						file_url: toPublicFileUrl(key1600),
+						// 800w thumbnail generated on-the-fly via transform
+						thumb_url: toPublicTransformedUrl(key1600, {
+							width: 800,
+						}),
 					})
+				} catch (err) {
+					errors.push({filename, error: String(err?.message || err)})
+				} finally {
+					resolve()
 				}
 			})
+
+			file.on("error", (err) => {
+				errors.push({filename, error: String(err?.message || err)})
+				resolve()
+			})
+		})
 
 		tasks.push(task)
 	})
 
 	bb.on("error", (err) => {
-		abortAll(err)
+		console.error("Busboy error:", err)
 		return res
 			.status(500)
 			.json({error: "upload_failed", detail: String(err?.message || err)})
@@ -217,37 +160,32 @@ r.post("/admin/:id/images", async (req, res) => {
 		}
 
 		try {
+			// Wait for all file processing + upload tasks
 			await Promise.all(tasks)
 
-			// If we had a file size limit error, fail the whole batch
-			if (hadLimitError) {
-				// Optional: delete any already-uploaded objects here.
-				return res.status(413).json({
-					error: "file_too_large",
-					max_bytes: MAX_FILE_SIZE,
-					files: perFileErrors,
-				})
-			}
-
-			// If everything failed
-			if (uploaded.length === 0 && perFileErrors.length) {
-				return res
-					.status(400)
-					.json({error: "upload_failed", files: perFileErrors})
-			}
-
-			// Insert only successful ones
+			// Insert only successfully uploaded images
 			if (rows.length) {
 				await pool.query(
-					`INSERT INTO project_images (project_id, file_path, alt, sort_order) VALUES ?`,
+					`INSERT INTO project_images (project_id, file_path, alt, sort_order)
+           VALUES ?`,
 					[rows],
 				)
 			}
 
-			res.status(201).json(uploaded)
+			if (uploaded.length === 0) {
+				return res.status(400).json({
+					error: "upload_failed",
+					details: errors,
+				})
+			}
+
+			return res.status(201).json({
+				uploaded,
+				errors: errors.length ? errors : undefined,
+			})
 		} catch (e) {
 			console.error("upload optimize error:", e)
-			res.status(500).json({error: "upload_failed"})
+			return res.status(500).json({error: "upload_failed"})
 		}
 	})
 
@@ -263,27 +201,33 @@ r.patch("/admin/:id/images/:imageId", async (req, res) => {
 
 	const sets = []
 	const params = []
+
 	if (Object.prototype.hasOwnProperty.call(req.body, "alt")) {
 		sets.push("alt = ?")
 		params.push(
 			req.body.alt == null ? null : String(req.body.alt).trim() || null,
 		)
 	}
+
 	if (Object.prototype.hasOwnProperty.call(req.body, "sort_order")) {
 		sets.push("sort_order = ?")
 		params.push(Number(req.body.sort_order) || 0)
 	}
+
 	if (!sets.length) return res.status(400).json({error: "nothing to update"})
 
 	params.push(projectId, imageId)
+
 	const [result] = await pool.execute(
-		`UPDATE project_images SET ${sets.join(
-			", ",
-		)} WHERE project_id = ? AND id = ?`,
+		`UPDATE project_images
+     SET ${sets.join(", ")}
+     WHERE project_id = ? AND id = ?`,
 		params,
 	)
+
 	if (result.affectedRows === 0)
 		return res.status(404).json({error: "not found"})
+
 	res.status(204).end()
 })
 
@@ -308,24 +252,16 @@ r.delete("/admin/:id/images/:imageId", async (req, res) => {
 	if (result.affectedRows === 0)
 		return res.status(404).json({error: "not found"})
 
-	// delete objects from storage (ignore errors)
+	// delete object(s) from storage (ignore errors)
 	if (img && img.file_path) {
 		const key1600 = img.file_path
 		const key800 = key1600.replace(/@(\d+)w\.webp$/, "@800w.webp")
-		await fetch(
-			`${process.env.SUPABASE_URL.replace(
-				/\/+$/,
-				"",
-			)}/storage/v1/object/${encodeURIComponent(bucket)}`,
-			{
-				method: "DELETE",
-				headers: {
-					Authorization: `Bearer ${process.env.SUPABASE_SERVICE_ROLE_KEY}`,
-					"Content-Type": "application/json",
-				},
-				body: JSON.stringify({prefixes: [key1600, key800]}),
-			},
-		).catch(() => {})
+
+		try {
+			await supabaseAdmin.storage.from(bucket).remove([key1600, key800])
+		} catch {
+			// ignore delete errors
+		}
 	}
 
 	res.status(204).end()
