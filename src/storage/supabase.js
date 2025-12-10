@@ -44,10 +44,13 @@ async function createSignedUploadForProject(projectId, originalName) {
 }
 
 function toPublicTransformedUrl(objectPath, transform = {width: 800}) {
-	const {data} = supabaseAdmin.storage
-		.from(bucket)
-		.getPublicUrl(objectPath, {transform})
-	return data.publicUrl
+	const base = process.env.SUPABASE_URL.replace(/\/+$/, "")
+	const params = new URLSearchParams(transform)
+
+	// Important: must NOT encode "/" but must encode special characters.
+	const safePath = objectPath.split("/").map(encodeURIComponent).join("/")
+
+	return `${base}/storage/v1/render/image/public/${bucket}/${safePath}?${params.toString()}`
 }
 
 module.exports = {
