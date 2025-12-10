@@ -11,6 +11,7 @@ const {
 	toPublicFileUrl,
 	toPublicTransformedUrl,
 } = require("../storage/supabase")
+const {queueRebuild} = require("../utils/rebuild")
 
 const r = express.Router()
 
@@ -179,6 +180,11 @@ r.post("/admin/:id/images", async (req, res) => {
 				})
 			}
 
+			// 🔁 Trigger FE rebuild for this project
+			try {
+				queueRebuild(projectId)
+			} catch (err) {}
+
 			return res.status(201).json({
 				uploaded,
 				errors: errors.length ? errors : undefined,
@@ -228,6 +234,11 @@ r.patch("/admin/:id/images/:imageId", async (req, res) => {
 	if (result.affectedRows === 0)
 		return res.status(404).json({error: "not found"})
 
+	// 🔁 Trigger FE rebuild for this project
+	try {
+		queueRebuild(projectId)
+	} catch (err) {}
+
 	res.status(204).end()
 })
 
@@ -263,6 +274,11 @@ r.delete("/admin/:id/images/:imageId", async (req, res) => {
 			// ignore delete errors
 		}
 	}
+
+	// 🔁 Trigger FE rebuild for this project
+	try {
+		queueRebuild(projectId)
+	} catch (err) {}
 
 	res.status(204).end()
 })
