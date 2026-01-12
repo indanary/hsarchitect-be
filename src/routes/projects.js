@@ -31,13 +31,21 @@ r.get("/public", async (req, res) => {
 	const qRaw = (req.query.q ?? "").toString().trim()
 	const q = qRaw.length ? `%${qRaw}%` : null
 
+	const projectTypeId = req.query.project_type_id
+		? String(req.query.project_type_id)
+		: null
+
 	const cond = []
 	const params = []
 
 	if (q) {
-		// use LOWER() for case-insensitive matching
 		cond.push(`LOWER(p.title) LIKE LOWER(?)`)
 		params.push(q)
+	}
+
+	if (projectTypeId) {
+		cond.push(`p.project_type_id = ?`)
+		params.push(projectTypeId)
 	}
 
 	const where = cond.length ? `WHERE ${cond.join(" AND ")}` : ""
