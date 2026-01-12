@@ -234,7 +234,7 @@ r.post("/admin", async (req, res) => {
 			toInt(project_type_id),
 			trimOrNull(scope),
 			toInt(year),
-			trimOrNull(status) || "draft",
+			trimOrNull(status) || "-",
 			trimOrNull(area),
 		],
 	)
