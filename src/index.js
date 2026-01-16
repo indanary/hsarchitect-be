@@ -13,6 +13,7 @@ const projectRoutes = require("./routes/projects")
 const studioRoutes = require("./routes/studio")
 const projectImagesRoutes = require("./routes/projectImages")
 const contactRoutes = require("./routes/contact")
+const {startSupabaseKeepAlive} = require("./storage/supabase")
 
 const app = express()
 
@@ -80,4 +81,7 @@ app.use((_req, res) => res.status(404).json({error: "Not found"}))
 
 /** Start */
 const port = Number(process.env.PORT || 8080)
-app.listen(port, () => console.log(`API listening on http://localhost:${port}`))
+app.listen(port, () => {
+	console.log(`API listening on http://localhost:${port}`)
+	startSupabaseKeepAlive() // <-- start Supabase keep-alive here
+})

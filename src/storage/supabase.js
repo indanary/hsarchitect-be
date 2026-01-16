@@ -48,6 +48,30 @@ function toPublicTransformedUrl(objectPath, _transform = {width: 800}) {
 	return toPublicFileUrl(objectPath)
 }
 
+// -------- SUPABASE STORAGE KEEP-ALIVE --------
+function startSupabaseKeepAlive(intervalMs = 10 * 60 * 1000) {
+	if (!url) {
+		console.warn("SUPABASE_URL not set — skipping Supabase keep-alive")
+		return
+	}
+
+	const ping = async () => {
+		try {
+			// Touch storage to keep the bucket active
+			await supabaseAdmin.storage.listBuckets()
+			console.log("Supabase Storage keep-alive OK")
+		} catch (err) {
+			console.error("Supabase keep-alive failed:", err.message)
+		}
+	}
+
+	// Run once immediately
+	ping()
+
+	// Then every 5 minutes
+	setInterval(ping, intervalMs)
+}
+
 module.exports = {
 	supabaseAdmin,
 	bucket,
@@ -55,4 +79,5 @@ module.exports = {
 	toPublicFileUrl,
 	createSignedUploadForProject,
 	toPublicTransformedUrl,
+	startSupabaseKeepAlive,
 }
