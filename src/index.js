@@ -13,6 +13,8 @@ const projectRoutes = require("./routes/projects")
 const studioRoutes = require("./routes/studio")
 const projectImagesRoutes = require("./routes/projectImages")
 const contactRoutes = require("./routes/contact")
+const mailRoutes = require("./routes/mail")
+
 const {startSupabaseKeepAlive} = require("./storage/supabase")
 
 const app = express()
@@ -75,6 +77,7 @@ app.use("/projects", projectRoutes)
 app.use("/projects", projectImagesRoutes) // image management
 app.use("/studio", studioRoutes)
 app.use("/contact", contactRoutes)
+app.use("/mail", mailRoutes)
 
 /** 404 */
 app.use((_req, res) => res.status(404).json({error: "Not found"}))
