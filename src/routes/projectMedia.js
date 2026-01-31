@@ -127,67 +127,13 @@ r.post("/admin/:id/media", async (req, res) => {
 			return
 		}
 
-		/* ================= VIDEO ================= */
-		if (mimeType === "video/mp4") {
-			const chunks = []
-
-			file.on("data", (c) => chunks.push(c))
-			file.on("limit", () =>
-				errors.push({filename, error: "file too large"}),
-			)
-
-			const task = new Promise((resolve) => {
-				file.on("end", async () => {
-					if (clientAborted) return resolve()
-
-					try {
-						const buffer = Buffer.concat(chunks)
-
-						const baseKey = objectKeyForProject(
-							projectId,
-							`videos/${filename}`,
-						)
-
-						const {error} = await supabaseAdmin.storage
-							.from(bucket)
-							.upload(baseKey, buffer, {
-								contentType: mimeType,
-								upsert: false,
-							})
-
-						if (error) {
-							errors.push({filename, error: error.message})
-							return resolve()
-						}
-
-						rows.push([
-							projectId,
-							"video",
-							baseKey,
-							null,
-							null,
-							mimeType,
-							null,
-							0,
-						])
-
-						uploaded.push({
-							type: "video",
-							file_url: toPublicFileUrl(baseKey),
-							thumb_url: null,
-						})
-					} catch (err) {
-						errors.push({
-							filename,
-							error: String(err.message || err),
-						})
-					}
-
-					resolve()
-				})
+		/* ================= VIDEO (DISABLED HERE) ================= */
+		if (mimeType.startsWith("video/")) {
+			errors.push({
+				filename,
+				error: "video upload must use signed upload url",
 			})
-
-			tasks.push(task)
+			file.resume()
 			return
 		}
 
@@ -238,6 +184,85 @@ r.post("/admin/:id/media", async (req, res) => {
 	})
 
 	req.pipe(bb)
+})
+
+/**
+ * POST /projects/admin/:id/media/video-upload-url
+ * Create signed URL for direct video upload
+ */
+r.post("/admin/:id/media/video-upload-url", async (req, res) => {
+	const projectId = Number(req.params.id)
+	if (!projectId) {
+		return res.status(400).json({error: "invalid id"})
+	}
+
+	const {filename, mimeType} = req.body
+
+	if (!filename || !mimeType) {
+		return res.status(400).json({error: "invalid payload"})
+	}
+
+	if (mimeType !== "video/mp4") {
+		return res.status(400).json({error: "unsupported video type"})
+	}
+
+	const key = objectKeyForProject(projectId, `videos/${filename}`)
+
+	try {
+		const {data, error} = await supabaseAdmin.storage
+			.from(bucket)
+			.createSignedUploadUrl(key)
+
+		if (error) {
+			return res.status(500).json({error: error.message})
+		}
+
+		res.json({
+			uploadUrl: data.signedUrl,
+			path: key,
+		})
+	} catch (err) {
+		console.error("video upload url error:", err)
+		res.status(500).json({error: "upload_url_failed"})
+	}
+})
+
+/**
+ * POST /projects/admin/:id/media/video-confirm
+ * Confirm successful video upload
+ */
+r.post("/admin/:id/media/video-confirm", async (req, res) => {
+	const projectId = Number(req.params.id)
+	if (!projectId) {
+		return res.status(400).json({error: "invalid id"})
+	}
+
+	const {path, mimeType} = req.body
+	if (!path || !mimeType) {
+		return res.status(400).json({error: "invalid payload"})
+	}
+
+	try {
+		await pool.query(
+			`INSERT INTO project_media
+       (project_id, type, file_path, alt, thumb_path, mime_type, duration, sort_order)
+       VALUES (?, 'video', ?, NULL, NULL, ?, NULL, 0)`,
+			[projectId, path, mimeType],
+		)
+
+		queueRebuild(projectId)
+
+		res.status(201).json({
+			uploaded: {
+				type: "video",
+				file_url: toPublicFileUrl(path),
+				thumb_url: null,
+			},
+		})
+	} catch (err) {
+		console.error("video confirm failed:", err)
+		res.status(500).json({error: "confirm_failed"})
+	}
 })
 
 /** PATCH /projects/admin/:id/media/:mediaId (alt, sort_order) */
