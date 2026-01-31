@@ -14,6 +14,7 @@ const studioRoutes = require("./routes/studio")
 const projectImagesRoutes = require("./routes/projectImages")
 const contactRoutes = require("./routes/contact")
 const mailRoutes = require("./routes/mail")
+const projectMediaRoutes = require("./routes/projectMedia")
 
 const {startSupabaseKeepAlive} = require("./storage/supabase")
 
@@ -75,6 +76,7 @@ app.use("/auth", authRoutes)
 app.use("/project-types", projectTypeRoutes)
 app.use("/projects", projectRoutes)
 app.use("/projects", projectImagesRoutes) // image management
+app.use("/projects", projectMediaRoutes)
 app.use("/studio", studioRoutes)
 app.use("/contact", contactRoutes)
 app.use("/mail", mailRoutes)
