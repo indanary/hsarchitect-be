@@ -254,21 +254,26 @@ r.get("/public/:id", async (req, res) => {
 			: null,
 	}))
 
-	// 5) derive cover from FIRST media item (image OR video poster)
-	const cover = media[0]?.thumb_url || images[0]?.thumb_url || null
+	// 5) derive cover (IMAGE ONLY)
+	const coverImage =
+		media.find((m) => m.type === "image" && m.thumb_url) ??
+		images[0] ??
+		null
 
-	// 6) respond (NON-BREAKING)
+	const cover = coverImage?.thumb_url ?? null
+
+	// 6) respond
 	res.json({
 		...project,
 		project_type,
 
-		// legacy (unchanged)
+		// legacy
 		images,
 		cover_url: cover,
 		cover_thumb_url: cover,
 		cover,
 
-		// new unified media
+		// unified
 		media,
 	})
 })
