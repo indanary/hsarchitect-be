@@ -129,54 +129,62 @@ r.post("/admin/:id/media", async (req, res) => {
 
 		/* ================= VIDEO ================= */
 		if (mimeType === "video/mp4") {
-			const task = new Promise(async (resolve) => {
-				if (clientAborted) return resolve()
+			const chunks = []
 
-				const baseKey = objectKeyForProject(
-					projectId,
-					`videos/${filename}`,
-				)
+			file.on("data", (c) => chunks.push(c))
+			file.on("limit", () =>
+				errors.push({filename, error: "file too large"}),
+			)
 
-				const pass = new PassThrough({
-					highWaterMark: 1024 * 1024 * 2,
+			const task = new Promise((resolve) => {
+				file.on("end", async () => {
+					if (clientAborted) return resolve()
+
+					try {
+						const buffer = Buffer.concat(chunks)
+
+						const baseKey = objectKeyForProject(
+							projectId,
+							`videos/${filename}`,
+						)
+
+						const {error} = await supabaseAdmin.storage
+							.from(bucket)
+							.upload(baseKey, buffer, {
+								contentType: mimeType,
+								upsert: false,
+							})
+
+						if (error) {
+							errors.push({filename, error: error.message})
+							return resolve()
+						}
+
+						rows.push([
+							projectId,
+							"video",
+							baseKey,
+							null,
+							null,
+							mimeType,
+							null,
+							0,
+						])
+
+						uploaded.push({
+							type: "video",
+							file_url: toPublicFileUrl(baseKey),
+							thumb_url: null,
+						})
+					} catch (err) {
+						errors.push({
+							filename,
+							error: String(err.message || err),
+						})
+					}
+
+					resolve()
 				})
-
-				const abort = () => pass.destroy()
-				req.on("close", abort)
-				req.on("aborted", abort)
-
-				file.pipe(pass)
-
-				const {error} = await supabaseAdmin.storage
-					.from(bucket)
-					.upload(baseKey, pass, {
-						contentType: mimeType,
-						upsert: false,
-					})
-
-				if (clientAborted || error) {
-					if (error) errors.push({filename, error: error.message})
-					return resolve()
-				}
-
-				rows.push([
-					projectId,
-					"video",
-					baseKey,
-					null, // alt
-					null, // thumb_path
-					mimeType,
-					null,
-					0,
-				])
-
-				uploaded.push({
-					type: "video",
-					file_url: toPublicFileUrl(baseKey),
-					thumb_url: null,
-				})
-
-				resolve()
 			})
 
 			tasks.push(task)
