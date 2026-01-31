@@ -145,8 +145,6 @@ LIMIT 100
 						url: m.file_path ? toPublicFileUrl(m.file_path) : null,
 						thumb_url: m.thumb_path
 							? toPublicFileUrl(m.thumb_path)
-							: m.file_path
-							? toPublicFileUrl(m.file_path)
 							: null,
 				  }))
 				: []
