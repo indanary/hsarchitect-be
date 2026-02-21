@@ -25,12 +25,13 @@ r.use(requireAdmin)
 r.post("/upload", async (req, res) => {
 	let uploaded = null
 	const errors = []
+	const tasks = []
 
 	const bb = Busboy({
 		headers: req.headers,
 		limits: {
 			fileSize: MAX_FILE_SIZE,
-			files: 1, // only 1 image for editor
+			files: 1,
 		},
 	})
 
@@ -51,45 +52,57 @@ r.post("/upload", async (req, res) => {
 			errors.push({filename, error: "file too large"})
 		})
 
-		file.on("end", async () => {
-			try {
-				const buffer = Buffer.concat(chunks)
+		const task = new Promise((resolve) => {
+			file.on("end", async () => {
+				try {
+					const buffer = Buffer.concat(chunks)
 
-				// 🔥 same pipeline as project images
-				const outBuf = await sharp(buffer)
-					.rotate()
-					.resize({width: 1600, withoutEnlargement: true})
-					.webp({quality: 78})
-					.toBuffer()
+					const outBuf = await sharp(buffer)
+						.rotate()
+						.resize({width: 1600, withoutEnlargement: true})
+						.webp({quality: 78})
+						.toBuffer()
 
-				const key = `studio/${Date.now()}-${filename}@1600w.webp`
+					const uniqueName = `${Date.now()}-${Math.random()
+						.toString(36)
+						.slice(2)}-${filename}`
 
-				const {error} = await supabaseAdmin.storage
-					.from(bucket)
-					.upload(key, outBuf, {
-						contentType: "image/webp",
-						upsert: false,
+					const key = `studio/${uniqueName}@1600w.webp`
+
+					const {error} = await supabaseAdmin.storage
+						.from(bucket)
+						.upload(key, outBuf, {
+							contentType: "image/webp",
+							upsert: false,
+						})
+
+					if (error) {
+						errors.push({filename, error: error.message})
+					} else {
+						uploaded = {
+							url: toPublicFileUrl(key),
+							thumb_url: toPublicTransformedUrl(key, {
+								width: 800,
+							}),
+						}
+					}
+				} catch (err) {
+					errors.push({
+						filename,
+						error: String(err.message || err),
 					})
-
-				if (error) {
-					errors.push({filename, error: error.message})
-					return
 				}
 
-				uploaded = {
-					url: toPublicFileUrl(key),
-					thumb_url: toPublicTransformedUrl(key, {width: 800}),
-				}
-			} catch (err) {
-				errors.push({
-					filename,
-					error: String(err.message || err),
-				})
-			}
+				resolve()
+			})
 		})
+
+		tasks.push(task)
 	})
 
-	bb.on("finish", () => {
+	bb.on("finish", async () => {
+		await Promise.all(tasks) // 🔥 critical fix
+
 		if (!uploaded) {
 			return res.status(400).json({
 				error: "upload_failed",
