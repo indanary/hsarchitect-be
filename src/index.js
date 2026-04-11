@@ -18,6 +18,7 @@ const projectMediaRoutes = require("./routes/projectMedia")
 const studioMediaRoutes = require("./routes/studioMedia")
 
 const {startSupabaseKeepAlive} = require("./storage/supabase")
+const {startAivenKeepAlive} = require("./storage/aiven")
 
 const app = express()
 
@@ -70,7 +71,14 @@ app.use(
 )
 
 /** Healthcheck */
-app.get("/health", (_req, res) => res.json({ok: true}))
+app.get("/health", async (_req, res) => {
+	try {
+		await db.query("SELECT 1") // wake Aiven
+		res.json({ok: true})
+	} catch (err) {
+		res.status(500).json({ok: false})
+	}
+})
 
 /** Routes */
 app.use("/auth", authRoutes)
@@ -91,4 +99,5 @@ const port = Number(process.env.PORT || 8080)
 app.listen(port, () => {
 	console.log(`API listening on http://localhost:${port}`)
 	startSupabaseKeepAlive() // <-- start Supabase keep-alive here
+	startAivenKeepAlive()
 })
