@@ -15,3 +15,7 @@ async function startAivenKeepAlive(intervalMs = 5 * 60 * 1000) {
 	// repeat
 	setInterval(ping, intervalMs)
 }
+
+module.exports = {
+	startAivenKeepAlive,
+}
