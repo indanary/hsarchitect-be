@@ -70,14 +70,21 @@ app.use(
 	}),
 )
 
-/** Healthcheck */
-app.get("/health", async (_req, res) => {
-	try {
-		await db.query("SELECT 1") // wake Aiven
-		res.json({ok: true})
-	} catch (err) {
-		res.status(500).json({ok: false})
+async function pingDB(retries = 2) {
+	for (let i = 0; i < retries; i++) {
+		try {
+			await db.query("SELECT 1")
+			return true
+		} catch (err) {
+			await new Promise((r) => setTimeout(r, 1000))
+		}
 	}
+	return false
+}
+
+app.get("/health", async (_req, res) => {
+	const ok = await pingDB()
+	res.json({ok})
 })
 
 /** Routes */
